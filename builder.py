@@ -27,6 +27,7 @@ import time
 import sys
 import matplotlib.pyplot as plt
 import re
+import subprocess
 from matplotlib.colors import LogNorm
 import psutil
 
@@ -100,34 +101,30 @@ def main():
         return (int(time.clock()) - start_time)
     def report(report_string):
          print(report_string)
-         print("Time is " + str(current_time/60) + "  minutes from start. ", end="")
-         print("Memory use is" + str(psutil.virtual_memory().percent) + "%")
+         print("Time is " + str(int(current_time()/60)) + " minutes from start. ", end="")
+         print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
          sys.stdout.flush()
          gc.collect()
          print("")
     report("Beginning builder.main()")
     """
-    Step 1: Assemble random catalog from randoms directory
+    Step 1: Assemble random catalog from randoms directory 
+    [done 10/17/17]
     """
-    report("Assembling the random catalog from directory")
-    combine(random_unprocessed)
+#    report("Assembling the random catalog from directory")
+#    combine(random_unprocessed)
     """
-    Step 2: Flag each catalog with WISE flags, venice flags
+    Step 2: Flag each catalog with WISE flags, venice flags 
+    [done 10/18/17]
     """
-    report("Flagging each relevant catalog with Venice")
-    venice_mask(random_unprocessed, random_venice_masked)
-    venice_mask(hsc_unprocessed, hsc_venice_masked)
+#    report("Flagging each relevant catalog with Venice")
+#    venice_mask(random_unprocessed, random_venice_masked, overwrite=True)
+#    venice_mask(hsc_unprocessed, hsc_venice_masked, overwrite=True)
     report("Flagging each relevant catalog with WISE mask from DiPompeo et al. 2017")
-    add_wise_mask_column(random_venice_masked, random_wise_venice_masked)
+#    add_wise_mask_column(random_venice_masked, random_wise_venice_masked)
     add_wise_mask_column(hsc_venice_masked, hsc_wise_venice_masked)
     """
     Step 3: Do each cross match
-    
-    file_cross_match(needle_path, haystack_path, new_needle_path,
-                     method="closest", radius=2,
-                     needle_ra_name='ra', needle_dec_name='dec',
-                     haystack_ra_name='ra', haystack_dec_name='dec',
-                     highest_metric='imag_kron'):
     """
     report("Cross matching WISE to HSC")
     file_cross_match(agn_unprocessed, hsc_wise_venice_masked, agn_partial1_processed,
@@ -157,45 +154,33 @@ def combine(new_path, directory = raw_random_directory, overwrite=False):
     for i in range(0, len(objects)):
         if objects[i][-4:] == "fits":
             good_objects.append(str(directory + objects[i]))
-    data_arrays = []
-    col_names = []
-    col_list = []
-    combined_data = []
-    formats = []
-    for i in range(0, len(good_objects)):
-        f = fits.open(good_objects[i])
-        col_names = f[1].columns.names
-        col_vals = []
-        for n in col_names:
-            col_vals.append(f[1].data[n].tolist())
-        data_arrays.append(col_vals)
-    for i in range(len(data_arrays[0])):
-        combined_data.append([])
-        for j in range(len(data_arrays)):
-            combined_data[i] = combined_data[i] + data_arrays[j][i]
-    for i in range(len(combined_data)):
-        t = type(combined_data[i][0])
-        if t == int:
-            formats.append("K")
-        elif t == float:
-            formats.append("D")
-        elif t == bool:
-            formats.append("L")
+    hdus = [fits.open(n, memmap=True) for n in good_objects]
+    colnames = ['object_id', 'ra', 'dec', 'tract']
+    #colnames = hdus[0][1].columns.names
+    #Would use this without memory limit but for some reason 'patch_s' has a high memory use
+    hdu = None
+    for n in colnames:
+        sys.stdout.flush()
+        full_array = []
+        for i in range(len(hdus)):
+            full_array = full_array + hdus[i][1].data[n].tolist()
+        if hdu == None:        
+            t = type(full_array[0])
+            if   t == int:   t = "K"
+            elif t == float: t = "D"
+            elif t == bool:  t = "L"
+            else:            t = "a"
+            coldef = fits.ColDefs([fits.Column(name=n, format=t, array=full_array)])
+            hdu = fits.HDUList(hdus = [fits.PrimaryHDU(), fits.BinTableHDU.from_columns(coldef)])
+            try:
+                hdu.writeto(new_path)
+            except OSError:
+                os.remove(new_path)
+                hdu.writeto(new_path)
         else:
-            formats.append("a")
-    for i in range(len(combined_data)):
-        col_list.append(fits.Column(name=col_names[i], format=formats[i],
-                                              array=data_arrays[i]))
-    hdu = fits.HDUList(hdus = [fits.PrimaryHDU(), fits.BinTableHDU.from_columns(col_list)])
-    try:
-        hdu.writeto(new_path)
-    except OSError:
-        if overwrite:
-            os.remove(new_path)
-            hdu.writeto(new_path)
-        else:
-            raise OSError("There is already a file at " + new_path)
-
+            hdu = add_column(hdu, new_path, [full_array], [n], overwrite=True)
+        full_array = None
+        gc.collect()
 
 def add_column(hdu, path, arrays, names, overwrite=False):
     """
@@ -219,22 +204,20 @@ def add_column(hdu, path, arrays, names, overwrite=False):
     @returns
         The new HDU
     """
-    formats = []
     for i in range(len(arrays)):
-        t = type(arrays[i][0])
-        if t == int:
-            formats.append("K")
-        elif t == float:
-            formats.append("D")
-        elif t == bool:
-            formats.append("L")
-        else:
-            formats.append("a")
-    column_list_to_add = []
-    for i in range(len(arrays)):
-        column_list_to_add.append(fits.Column(name=names[i], format=formats[i],
-                                              array=arrays[i]))
-    hdu[1] = fits.BinTableHDU.from_columns(hdu[1].columns + column_list_to_add)
+        fmt = type(arrays[i].tolist()[0])
+        arrays[i] = np.array(arrays[i], dtype=fmt)
+        if   fmt == int:   fmt = "K"
+        elif fmt == float: fmt = "D"
+        elif fmt == bool:  fmt = "L"
+        else:              fmt = "a"
+        print("col = fits.Column(name=names[i], format=fmt, array=arrays[i])")
+        col = fits.Column(name=names[i], format=fmt, array=arrays[i])
+        print("coldef = hdu[1].columns.add_col(col)")
+        coldef = hdu[1].columns.add_col(col)
+        print("hdu[1] = fits.BinTableHDU.from_columns(coldef)")
+        hdu[1] = fits.BinTableHDU.from_columns(coldef)
+    print("hdu.writeto(path)")
     try:
         hdu.writeto(path)
     except OSError:
@@ -245,27 +228,35 @@ def add_column(hdu, path, arrays, names, overwrite=False):
             raise OSError("There is already a file at '" +
                           path + "' and overwrite = False")
     #cleaning up and returning
-    column_list_to_add = None
     hdu = None
     gc.collect()
-    new_hdu = fits.open(path)
+    new_hdu = fits.open(path, memmap=True)
     return new_hdu
 
-def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec'):
+def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=False):
     """
     Venice masks the fits at the given path. 
     
     Adds a column called 'flag' which is 1 if the object is not masked and 
     0 if it is masked.
     
+    dependencies: subprocess, Venice
+    
     @params
         unprocessed       - name of the file to mask
         masked            - where the new file will be saved
         ra_name, dec_name - the name of the columns
     """
-    os.popen(venice + venice_masks + " -f all -cat " + unprocessed +
-             " -xcol " + ra_name + " -ycol " + dec_name + " -o " + masked)
-
+    
+    o = ""
+    if overwrite == True:
+        o = "!"
+    
+    command = (venice + venice_masks + " -f all -cat " + unprocessed +
+                     " -xcol " + ra_name + " -ycol " + dec_name + " -o " + o + masked)
+    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
+    process.wait()
+    
 def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
     """
     Apply the WISE mangle mask to a file. 
@@ -278,14 +269,18 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
         masked            - where the new masked file will be saved
         ra_name, dec_name - the name of the columns
     """
-    file = fits.open(unprocessed)
+    print("file = fits.open(unprocessed, memmap=True)")
+    file = fits.open(unprocessed, memmap=True)
+    print("ra = file[1].data[ra_name]")
+    print("dec = file[1].data[dec_name]")
     ra = file[1].data[ra_name]
     dec = file[1].data[dec_name]
+    print("unmasked_indices = wise_mask(ra, dec)")
     unmasked_indices = wise_mask(ra, dec)
-    array_to_add = np.zeros(len(ra))
+    array_to_add = np.zeros(len(ra), dtype=int)
     for i in unmasked_indices:
         array_to_add[i] = 1
-    add_column(file, masked, array_to_add, 'wise_flag', overwrite=True)
+    add_column(file, masked, [array_to_add], ['wise_flag'], overwrite=True)
 
 def wise_mask(ra, dec, mangle_files=wise_mangles):
     """
@@ -293,6 +288,8 @@ def wise_mask(ra, dec, mangle_files=wise_mangles):
     
     Uses equatorial coordinates, converts them to galactic, does the thing, and
     returns the indices.
+    
+    Dependencies: numpy, astropy.coordinates.SkyCoord, mangle
     
     @params
         ra_list, dec_list
@@ -356,8 +353,8 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
             Case insensitive.
 
     """
-    needle = fits.open(needle_path)
-    haystack = fits.open(haystack_path)
+    needle = fits.open(needle_path, memmap=True)
+    haystack = fits.open(haystack_path, memmap=True)
     indices = cross_match(needle, haystack, method=method, radius=radius,
                           needle_ra_name = needle_ra_name, needle_dec_name = needle_dec_name,
                           haystack_ra_name = haystack_ra_name, haystack_dec_name = haystack_dec_name,
@@ -372,8 +369,8 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         name_to_use = str(prefix + haystack_col_names[i])
         haystack_array = haystack[1].data[haystack_col_names[i]]
         needlized_array = [haystack_array[i] for i in indices]
-        needle = add_column(needle, new_needle_path, needlized_array,
-                            name_to_use, overwrite=True)
+        needle = add_column(needle, new_needle_path, [needlized_array],
+                            [name_to_use], overwrite=True)
         haystack_array = None
         needlized_array = None
         gc.collect()
@@ -460,13 +457,14 @@ def cross_match(needle, haystack, method="closest", radius=2,
 def ra_dec_to_xyz(ra, dec):
     """
     Convert ra & dec to Euclidean points projected on a unit sphere
+    
+    dependencies: numpy
 
-    Parameters
-    ----------
-    ra, dec : ndarrays
+    @params
+        ra, dec - ndarrays
 
-    Returns
-    x, y, z : ndarrays
+    @returns
+        x, y, z - ndarrays
     """
     sin_ra = np.sin(ra * np.pi / 180.)
     cos_ra = np.cos(ra * np.pi / 180.)
@@ -480,13 +478,14 @@ def ra_dec_to_xyz(ra, dec):
 def xyz_to_ra_dec(x, y, z):
     """
     Convert back to RA and DEC
+    
+    dependencies: numpy
 
-    Parameters
-    ----------
-    x, y, z : ndarrays
+    @params
+        ra, dec - ndarrays
 
-    Returns
-    ra, dec : ndarrays
+    @returns
+        x, y, z - ndarrays
     """
     xyz = [x, y, z]
     xy = xyz[:,0]**2 + xyz[:,1]**2
