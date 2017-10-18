@@ -211,11 +211,8 @@ def add_column(hdu, path, arrays, names, overwrite=False):
         elif fmt == float: fmt = "D"
         elif fmt == bool:  fmt = "L"
         else:              fmt = "a"
-        print("col = fits.Column(name=names[i], format=fmt, array=arrays[i])")
         col = fits.Column(name=names[i], format=fmt, array=arrays[i])
-        print("coldef = hdu[1].columns.add_col(col)")
         coldef = hdu[1].columns.add_col(col)
-        print("hdu[1] = fits.BinTableHDU.from_columns(coldef)")
         hdu[1] = fits.BinTableHDU.from_columns(coldef)
     print("hdu.writeto(path)")
     try:
@@ -269,13 +266,9 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
         masked            - where the new masked file will be saved
         ra_name, dec_name - the name of the columns
     """
-    print("file = fits.open(unprocessed, memmap=True)")
     file = fits.open(unprocessed, memmap=True)
-    print("ra = file[1].data[ra_name]")
-    print("dec = file[1].data[dec_name]")
     ra = file[1].data[ra_name]
     dec = file[1].data[dec_name]
-    print("unmasked_indices = wise_mask(ra, dec)")
     unmasked_indices = wise_mask(ra, dec)
     array_to_add = np.zeros(len(ra), dtype=int)
     for i in unmasked_indices:
