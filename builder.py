@@ -7,9 +7,10 @@ builder.py
 -Constructs the catalogs from scratch, step by step
 
 Steps, in order
-1. assemble random catalog
-2. add all the flags
-3. do the cross matches
+1. add venice flags
+2. turn fits into csvs
+3. add wise flags
+4. do the cross matches
 
 @author: csh4
 """
@@ -30,32 +31,51 @@ import re
 import subprocess
 from matplotlib.colors import LogNorm
 import psutil
+from astropy.table import Table
+
+
+"""
+Catalog/file object nomenclature
+
+name_x_fits - fits file type
+p_name  - path to file
+
+name_u  - unprocessed at all (typically a fits)
+name_v  - venice mask applied (fits in and out)
+name_vw - venice and wise mask applied
+name_p  - partially processed (cross match started but not finished)
+name_f  - fully processed/finished catalog
+name_q  - quality cut catalog (whatever is decided on)
+"""
+
 
 """Catalogs info"""
-raw_random_directory = "/scr/depot0/csh4/cats/unprocessed/randoms/"
-random_unprocessed = "/scr/depot0/csh4/cats/unprocessed/rand_u.fits"
-random_venice_masked = "/scr/depot0/csh4/cats/partial/rand_venice_masked.fits"
-random_wise_venice_masked = "/scr/depot0/csh4/cats/partial/rand_wise_venice_masked.fits"
-random_processed = "/scr/depot0/csh4/cats/processed/rand_p.fits"
+#note: this version assumes the random is already assembled
+p_rand_u_fits = "/scr/depot0/csh4/cats/unprocessed/rand_u.fits"
+p_rand_v_fits = "/scr/depot0/csh4/cats/partial/rand_v.fits"
+p_rand_v =      "/scr/depot0/csh4/cats/partial/rand_v.csv"
+p_rand_vw =     "/scr/depot0/csh4/cats/partial/rand_vw.csv"
+p_rand_f =      "/scr/depot0/csh4/cats/processed/rand_f.csv"
 
-agn_unprocessed = "/scr/depot0/csh4/cats/unprocessed/agn_u.fits"
-agn_partial1_processed = "/scr/depot0/csh4/cats/partial/agn_p1.fits"
-agn_partial2_processed = "/scr/depot0/csh4/cats/partial/agn_p2.fits"
-agn_processed = "/scr/depot0/csh4/cats/processed/agn_p.fits"
-agn_type1_processed = "/scr/depot0/csh4/cats/processed/agn1_p.fits"
-agn_type2_processed = "/scr/depot0/csh4/cats/processed/agn2_p.fits"
+p_agn_u_fits =  "/scr/depot0/csh4/cats/unprocessed/agn_u.fits"
+p_agn_u =       "/scr/depot0/csh4/cats/unprocessed/agn_u.csv"
+p_agn_p =       "/scr/depot0/csh4/cats/partial/agn_p.csv"     #1/2 cross matches done (hsc)
+p_agn_f =       "/scr/depot0/csh4/cats/processed/agn_f.csv"   #2/2 cross matches done (sdss)
 
-hsc_unprocessed = "/scr/depot0/csh4/cats/unprocessed/hsc_u.fits"
-hsc_venice_masked = "/scr/depot0/csh4/cats/partial/hsc_venice_masked.fits"
-hsc_wise_venice_masked = "/scr/depot0/csh4/cats/partial/hsc_wise_venice_masked.fits"
-hsc_processed = "/scr/depot0/csh4/cats/processed/hsc_p.fits"
+p_hsc_u_fits =  "/scr/depot0/csh4/cats/unprocessed/hsc_u.fits"
+p_hsc_v_fits =  "/scr/depot0/csh4/cats/partial/hsc_v.fits"
+p_hsc_v =       "/scr/depot0/csh4/cats/partial/hsc_v.csv"
+p_hsc_vw =      "/scr/depot0/csh4/cats/partial/hsc_vw.csv"
+p_hsc_f =       "/scr/depot0/csh4/cats/processed/hsc_f.fits"  #specz cross match done
 
-specz_reference = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.fits"
+p_specz_fits = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.fits"
+p_specz = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.csv"
 specz_raname   = 'ra2000  '
 specz_decname  = 'decl2000'
 specz_specname = 'redshift'
 
-sdss_reference = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.fits"
+p_sdss_fits = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.fits"
+p_sdss = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.csv"
 mgII_name = 'FWHM_MGII'
 cIV_name  = 'FWHM_CIV'
 
@@ -94,7 +114,7 @@ flag_names = ["iflags_pixel_saturated_any",
 
 def main():
     """
-    Build everything from scratch, with options to skip each part
+    Build everything from scratch. Comment out the finished parts.
     """
     start_time = int(time.clock())
     def current_time():
@@ -107,80 +127,59 @@ def main():
          gc.collect()
          print("")
     report("Beginning builder.main()")
+    
     """
-    Step 1: Assemble random catalog from randoms directory 
-    [done 10/17/17]
+    Step 1: Venice flags for
+                -rand_u_fits -> rand_v_fits
+                -hsc_u_fits  -> hsc_v_fits
     """
-#    report("Assembling the random catalog from directory")
-#    combine(random_unprocessed)
+    report("Flagging each relevant catalog with Venice")
+    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
+    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
+    
     """
-    Step 2: Flag each catalog with WISE flags, venice flags 
-    [done 10/18/17]
+    Step 2: FITS to CSV for
+                -sdss_fits   -> sdss
+                -specz_fits  -> specz
+                -hsc_v_fits  -> hsc_v
+                -rand_v_fits -> rand_v
+                -agn_u_fits  -> agn_u
     """
-#    report("Flagging each relevant catalog with Venice")
-#    venice_mask(random_unprocessed, random_venice_masked, overwrite=True)
-#    venice_mask(hsc_unprocessed, hsc_venice_masked, overwrite=True)
+    fits_to_csv(p_sdss_fits, p_sdss, overwrite=True)
+    fits_to_csv(p_specz_fits, p_sdss, overwrite=True)
+    fits_to_csv(p_hsc_v_fits, p_hsc_v, overwrite=True)
+    fits_to_csv(p_rand_v_fits, p_rand_v, overwrite=True)
+    fits_to_csv(p_agn_u_fits, p_agn_u, overwrite=True)
+    
+    """
+    Step 3: WISE flags for
+                -rand_v -> rand_vw
+                -hsc_v  -> hsc_vw
+    """
     report("Flagging each relevant catalog with WISE mask from DiPompeo et al. 2017")
-#    add_wise_mask_column(random_venice_masked, random_wise_venice_masked)
-    add_wise_mask_column(hsc_venice_masked, hsc_wise_venice_masked)
+    add_wise_mask_column(p_rand_v, p_rand_vw)
+    add_wise_mask_column(p_hsc_v, p_hsc_vw)
+    
     """
-    Step 3: Do each cross match
+    Step 4: Cross matches
+                -hsc_vw, specz -> hsc_f
+                -agn_u,  hsc_f -> agn_p
+                -agn_p,  sdss  -> agn_f
     """
-    report("Cross matching WISE to HSC")
-    file_cross_match(agn_unprocessed, hsc_wise_venice_masked, agn_partial1_processed,
-                     method='brightest', radius=2, prefix='hsc1')
-    report("Cross matching WISE to Spec-Z")
-    file_cross_match(agn_partial1_processed, specz_reference, agn_partial2_processed,
-                     method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, prefix='specz')
-    report("Cross matching WISE to SDSS")
-    file_cross_match(agn_partial2_processed, sdss_reference, agn_processed,
-                     method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, prefix='sdsst1')
     report("Cross matching HSC to Spec-Z")
-    file_cross_match(hsc_wise_venice_masked, specz_reference, hsc_processed,
+    file_cross_match(p_hsc_vw, p_specz, p_hsc_f,
                      method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, prefix='specz')
+                     haystack_dec_name = specz_decname, prefix='specz_')
+    report("Cross matching WISE to HSC")
+    file_cross_match(p_agn_u, p_hsc_f, p_agn_p,
+                     method='brightest', radius=2, prefix='hsc1_')
+    report("Cross matching WISE to SDSS")
+    file_cross_match(p_agn_p, p_sdss, p_agn_f,
+                     method='closest', radius=2, haystack_ra_name = specz_raname,
+                     haystack_dec_name = specz_decname, prefix='sdss_t1_')
+    
     report("Done")
 
-def combine(new_path, directory = raw_random_directory, overwrite=False):
-    """
-    Combines the fits files in a directory, assuming they all have the same
-    columns and in the same order. 
-    """
-    objects = os.listdir(directory)
-    
-    good_objects = []
-    for i in range(0, len(objects)):
-        if objects[i][-4:] == "fits":
-            good_objects.append(str(directory + objects[i]))
-    hdus = [fits.open(n, memmap=True) for n in good_objects]
-    colnames = ['object_id', 'ra', 'dec', 'tract']
-    #colnames = hdus[0][1].columns.names
-    #Would use this without memory limit but for some reason 'patch_s' has a high memory use
-    hdu = None
-    for n in colnames:
-        sys.stdout.flush()
-        full_array = []
-        for i in range(len(hdus)):
-            full_array = full_array + hdus[i][1].data[n].tolist()
-        if hdu == None:        
-            t = type(full_array[0])
-            if   t == int:   t = "K"
-            elif t == float: t = "D"
-            elif t == bool:  t = "L"
-            else:            t = "a"
-            coldef = fits.ColDefs([fits.Column(name=n, format=t, array=full_array)])
-            hdu = fits.HDUList(hdus = [fits.PrimaryHDU(), fits.BinTableHDU.from_columns(coldef)])
-            try:
-                hdu.writeto(new_path)
-            except OSError:
-                os.remove(new_path)
-                hdu.writeto(new_path)
-        else:
-            hdu = add_column(hdu, new_path, [full_array], [n], overwrite=True)
-        full_array = None
-        gc.collect()
 
 def add_column(hdu, path, arrays, names, overwrite=False):
     """
@@ -211,8 +210,11 @@ def add_column(hdu, path, arrays, names, overwrite=False):
         elif fmt == float: fmt = "D"
         elif fmt == bool:  fmt = "L"
         else:              fmt = "a"
+        print("col = fits.Column(name=names[i], format=fmt, array=arrays[i])")
         col = fits.Column(name=names[i], format=fmt, array=arrays[i])
+        print("coldef = hdu[1].columns.add_col(col)")
         coldef = hdu[1].columns.add_col(col)
+        print("hdu[1] = fits.BinTableHDU.from_columns(coldef)")
         hdu[1] = fits.BinTableHDU.from_columns(coldef)
     print("hdu.writeto(path)")
     try:
@@ -266,9 +268,13 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
         masked            - where the new masked file will be saved
         ra_name, dec_name - the name of the columns
     """
+    print("file = fits.open(unprocessed, memmap=True)")
     file = fits.open(unprocessed, memmap=True)
+    print("ra = file[1].data[ra_name]")
+    print("dec = file[1].data[dec_name]")
     ra = file[1].data[ra_name]
     dec = file[1].data[dec_name]
+    print("unmasked_indices = wise_mask(ra, dec)")
     unmasked_indices = wise_mask(ra, dec)
     array_to_add = np.zeros(len(ra), dtype=int)
     for i in unmasked_indices:
@@ -486,6 +492,18 @@ def xyz_to_ra_dec(x, y, z):
     ra = np.arctan2(xyz[:,1], xyz[:,0])
     return ra, dec
 
+def fits_to_csv(path, new_path, overwrite=False):
+    """
+    Takes a fits file and turns it into a csv file using astropy.
+    """
+    Table.read(path, hdu=1).write(new_path, overwrite=overwrite, format="ascii.csv")
+
+def csv_to_fits(path, new_path, overwrite=False):
+    """
+    Takes a csv file and turns it into a fits file using astropy.
+    """
+    Table.read(path, format="ascii.csv").write(new_path, overwrite=overwrite, format="fits")
+    
 if __name__ == "__main__":
     main()
     pass
