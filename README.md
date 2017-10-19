@@ -1,6 +1,8 @@
 # corrset
 Cassandra's correlation astronomy code
 
+This version uses astropy for all the file handling. The new version uses astropy very minimally. 
+
 In the most general terms, this code is, for now, divided into three parts
 1. builder.py
     This module takes the input files (spec-z catalog, hsc catalog, agn catalog, sdss t1 agn spectroscopy catalog) and generates complete cross-match catalogs from them. These catalogs will be suitable for running whole-catalogs statistics
