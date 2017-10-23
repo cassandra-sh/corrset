@@ -2,16 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon Oct 16 13:14:35 2017
-
 builder.py
 -Constructs the catalogs from scratch, step by step
-
 Steps, in order
 1. add venice flags
 2. turn fits into csvs
 3. add wise flags
 4. do the cross matches
-
 @author: csh4
 """
 
@@ -31,15 +28,13 @@ import re
 import subprocess
 from matplotlib.colors import LogNorm
 import psutil
-from astropy.table import Table
+import pandas as pd
 
 
 """
 Catalog/file object nomenclature
-
 name_x_fits - fits file type
 p_name  - path to file
-
 name_u  - unprocessed at all (typically a fits)
 name_v  - venice mask applied (fits in and out)
 name_vw - venice and wise mask applied
@@ -128,28 +123,36 @@ def main():
          print("")
     report("Beginning builder.main()")
     
-    """
-    Step 1: Venice flags for
-                -rand_u_fits -> rand_v_fits
-                -hsc_u_fits  -> hsc_v_fits
-    """
-    report("Flagging each relevant catalog with Venice")
-    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
-    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
-    
-    """
-    Step 2: FITS to CSV for
-                -sdss_fits   -> sdss
-                -specz_fits  -> specz
-                -hsc_v_fits  -> hsc_v
-                -rand_v_fits -> rand_v
-                -agn_u_fits  -> agn_u
-    """
-    fits_to_csv(p_sdss_fits, p_sdss, overwrite=True)
-    fits_to_csv(p_specz_fits, p_sdss, overwrite=True)
-    fits_to_csv(p_hsc_v_fits, p_hsc_v, overwrite=True)
-    fits_to_csv(p_rand_v_fits, p_rand_v, overwrite=True)
-    fits_to_csv(p_agn_u_fits, p_agn_u, overwrite=True)
+#    """
+#    Step 1: Venice flags for
+#                -rand_u_fits -> rand_v_fits
+#                -hsc_u_fits  -> hsc_v_fits
+#    Already done
+#    """
+#    report("Flagging each relevant catalog with Venice")
+#    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
+#    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
+#    
+#    """
+#    Step 2: FITS to csv for
+#                -sdss_fits   -> sdss
+#                -specz_fits  -> specz
+#                -hsc_v_fits  -> hsc_v
+#                -rand_v_fits -> rand_v
+#                -agn_u_fits  -> agn_u
+#    
+#    Currently using topcat for this part    
+#    """
+#    report("File 1")
+#    fits_to_csv(p_sdss_fits, p_sdss, overwrite=True)
+#    report("File 2")
+#    fits_to_csv(p_specz_fits, p_sdss, overwrite=True)
+#    report("File 3")
+#    fits_to_csv(p_hsc_v_fits, p_hsc_v, overwrite=True)
+#    report("File 4")
+#    fits_to_csv(p_rand_v_fits, p_rand_v, overwrite=True)
+#    report("File 5")
+#    fits_to_csv(p_agn_u_fits, p_agn_u, overwrite=True)
     
     """
     Step 3: WISE flags for
@@ -157,8 +160,8 @@ def main():
                 -hsc_v  -> hsc_vw
     """
     report("Flagging each relevant catalog with WISE mask from DiPompeo et al. 2017")
-    add_wise_mask_column(p_rand_v, p_rand_vw)
-    add_wise_mask_column(p_hsc_v, p_hsc_vw)
+    add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=500000)
+    add_wise_mask_column(p_hsc_v, p_hsc_vw, chunksize=500000)
     
     """
     Step 4: Cross matches
@@ -169,68 +172,16 @@ def main():
     report("Cross matching HSC to Spec-Z")
     file_cross_match(p_hsc_vw, p_specz, p_hsc_f,
                      method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, prefix='specz_')
+                     haystack_dec_name = specz_decname, sfx='_specz', chunksize=500000)
     report("Cross matching WISE to HSC")
-    file_cross_match(p_agn_u, p_hsc_f, p_agn_p,
-                     method='brightest', radius=2, prefix='hsc1_')
+    file_cross_match(p_agn_u, p_hsc_f, p_agn_p, chunksize=500000,
+                     method='brightest', radius=2, sfx='hsc1')
     report("Cross matching WISE to SDSS")
-    file_cross_match(p_agn_p, p_sdss, p_agn_f,
+    file_cross_match(p_agn_p, p_sdss, p_agn_f, chunksize=500000,
                      method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, prefix='sdss_t1_')
+                     haystack_dec_name = specz_decname, sfx='_sdss_t1')
     
     report("Done")
-
-
-def add_column(hdu, path, arrays, names, overwrite=False):
-    """
-    Takes the given HDU and makes a new one with new columns added on to it.
-    Saves the HDU to the path, closes it, opens the new HDU from that path, and
-    returns it.
-    
-    @params
-        hdu
-            The thing to add the columns to
-        path
-            The file path to save the new HDU to
-        arrays
-            The arrays to add. Must be an array of arrays. If adding only one, 
-            you have to wrap it so arrays[0] = your data
-        names
-            The names associated with the arrays to add
-        overwrite = True
-            Will only overwrite a file at path if overwrite=True
-    
-    @returns
-        The new HDU
-    """
-    for i in range(len(arrays)):
-        fmt = type(arrays[i].tolist()[0])
-        arrays[i] = np.array(arrays[i], dtype=fmt)
-        if   fmt == int:   fmt = "K"
-        elif fmt == float: fmt = "D"
-        elif fmt == bool:  fmt = "L"
-        else:              fmt = "a"
-        print("col = fits.Column(name=names[i], format=fmt, array=arrays[i])")
-        col = fits.Column(name=names[i], format=fmt, array=arrays[i])
-        print("coldef = hdu[1].columns.add_col(col)")
-        coldef = hdu[1].columns.add_col(col)
-        print("hdu[1] = fits.BinTableHDU.from_columns(coldef)")
-        hdu[1] = fits.BinTableHDU.from_columns(coldef)
-    print("hdu.writeto(path)")
-    try:
-        hdu.writeto(path)
-    except OSError:
-        if overwrite:
-            os.remove(path)
-            hdu.writeto(path)
-        else:
-            raise OSError("There is already a file at '" +
-                          path + "' and overwrite = False")
-    #cleaning up and returning
-    hdu = None
-    gc.collect()
-    new_hdu = fits.open(path, memmap=True)
-    return new_hdu
 
 def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=False):
     """
@@ -246,17 +197,16 @@ def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=Fal
         masked            - where the new file will be saved
         ra_name, dec_name - the name of the columns
     """
-    
     o = ""
     if overwrite == True:
         o = "!"
-    
     command = (venice + venice_masks + " -f all -cat " + unprocessed +
                      " -xcol " + ra_name + " -ycol " + dec_name + " -o " + o + masked)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
     process.wait()
     
-def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
+def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
+                         chunksize=10000):
     """
     Apply the WISE mangle mask to a file. 
     
@@ -267,19 +217,25 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec'):
         unprocessed       - name of the file to mask
         masked            - where the new masked file will be saved
         ra_name, dec_name - the name of the columns
+        chunksize         - size of chunks to read and write the file in
     """
-    print("file = fits.open(unprocessed, memmap=True)")
-    file = fits.open(unprocessed, memmap=True)
-    print("ra = file[1].data[ra_name]")
-    print("dec = file[1].data[dec_name]")
-    ra = file[1].data[ra_name]
-    dec = file[1].data[dec_name]
-    print("unmasked_indices = wise_mask(ra, dec)")
-    unmasked_indices = wise_mask(ra, dec)
-    array_to_add = np.zeros(len(ra), dtype=int)
-    for i in unmasked_indices:
-        array_to_add[i] = 1
-    add_column(file, masked, [array_to_add], ['wise_flag'], overwrite=True)
+    #1. Get the unprocessed csv in chunks
+    frame = pd.read_csv(unprocessed, chunksize=chunksize)
+    #2. Iterate through the chunks
+    for chunk in frame:
+        #i.   Get ra and dec
+        ra = chunk[ra_name]
+        dec = chunk[dec_name]
+        #ii.  Feed the RA and DEC into the wise mask function
+        unmasked_indices = wise_mask(ra, dec)
+        #iii. Use the array returned to construct an array to add to the DataFrame
+        array_to_add = np.zeros(len(ra), dtype=int)
+        for i in unmasked_indices:
+            array_to_add[i] = 1
+        #iv.  Add it to the DataFrame
+        chunk['wise_flag']  = array_to_add
+        #v.   Append to the csv
+        chunk.to_csv(masked, mode='a')
 
 def wise_mask(ra, dec, mangle_files=wise_mangles):
     """
@@ -322,26 +278,26 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
                      method="closest", radius=2, prefix='',
                      needle_ra_name='ra', needle_dec_name='dec',
                      haystack_ra_name='ra', haystack_dec_name='dec',
-                     highest_metric='imag_kron'):
+                     metric='imag_kron', chunksize=10000, sfx="_cmatch"):
     """
     Does a cross match with the given file paths, using cross_match
-    
-        
+
     @params
         needle_path, haystack_path
             paths to fits files which are to be crossmatched
         new_needle_path
             path to save the new fits file to
         method = "closest", "brightest", "circle", or "bayesian"
-            Four methods for searching. Each do the following:
+            Three methods for searching. Each do the following:
                 "closest"   - returns the closest object within the limit
                 "highest"   - return the object with the higest of a given value
                                 which is haystack[1].data[highest_metric], 
                                 imag_kron by default
-                "circle"    - return a list of every index within the circle
                 "bayesian"  - return an index prioritized by some kind of
                                 function that cares about brightness and 
-                                closeness
+                                closeness]
+                (circle not allowed because this is a file cross match, which 
+                needs 1 result per entry)
         radius = 2
             Number of arc seconds to look within for the search. 
             Give limit <= 0 for no limit.
@@ -350,43 +306,60 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         needle_ra_name, needle_dec_name, haystack_ra_name, haystack_dec_name
             The names of the columns in the needle and haystack lists. 
             Case insensitive.
-
+        chunksize
+            Amount of rows to pull from haystack at any given time
     """
-    needle = fits.open(needle_path, memmap=True)
-    haystack = fits.open(haystack_path, memmap=True)
-    indices = cross_match(needle, haystack, method=method, radius=radius,
-                          needle_ra_name = needle_ra_name, needle_dec_name = needle_dec_name,
-                          haystack_ra_name = haystack_ra_name, haystack_dec_name = haystack_dec_name,
-                          highest_metric = highest_metric)
-    haystack_col_names = haystack[1].columns.names
+    #0. Prepare some things.
+    needle = pd.read_csv(needle_path)
+    haystack = pd.read_csv(haystack_path, chunksize=chunksize)
     
-    #Here we need to pull arrays from haystack one at a time, get the relevant values,
-    #make a new column, add it to the needle hdu, save it, reload the needle HDU, and
-    #get the next array and repeat, as to keep the load on the memory as low as possible
+    #1. Get the indices of the matches
+    haystack_indices = cross_match(needle, haystack, method=method,
+                                   radius=radius,
+                                   n_ra = needle_ra_name,
+                                   n_dec = needle_dec_name,
+                                   h_ra = haystack_ra_name,
+                                   h_dec = haystack_dec_name,
+                                   metric = metric)
+    #reload haystack after iterating through chunks
+    haystack = pd.read_csv(haystack_path, chunksize=chunksize) 
+    needle_indices = range(0, needle.shape[0])
+    #2. Iterate through the haystack adding the relevant entries to needle
+    frame_to_add = None
+    for chunk in haystack:
+        #i.   Figure out which indices are relevant to this chunk
+        chunk_min, chunk_max = min(chunk.index), max(chunk.index)
+        relevant = np.logical_and(np.less(haystack_indices, chunk_max),
+                                  np.greater(haystack_indices, chunk_min))
+        relevant_indices = np.where(relevant)[0]
+        relevant_needle_indices = [needle_indices[i] for i in relevant_indices]
+        relevant_haystack_indices = [haystack_indices[i] for i in relevant_indices]
+        #ii.  Append relevant haystack entries the frame_to_add object
+        attach = haystack.iloc[relevant_haystack_indices]
+        attach["index"] = relevant_needle_indices
+        if frame_to_add == None: frame_to_add = attach
+        else: frame_to_add = frame_to_add.append(attach, ignore_index=True)
+    #3. Attach the frame to add to the needle frame
+    frame_to_add.set_index('index')
+    needle = needle.join(attach, rsuffix=sfx)
+    #4. Save the new (needle) object
+    needle.to_csv(new_needle_path)
     
-    for i in range(len(haystack_col_names)):
-        name_to_use = str(prefix + haystack_col_names[i])
-        haystack_array = haystack[1].data[haystack_col_names[i]]
-        needlized_array = [haystack_array[i] for i in indices]
-        needle = add_column(needle, new_needle_path, [needlized_array],
-                            [name_to_use], overwrite=True)
-        haystack_array = None
-        needlized_array = None
-        gc.collect()
-       
 
 def cross_match(needle, haystack, method="closest", radius=2,
-                needle_ra_name='ra', needle_dec_name='dec',
-                haystack_ra_name='ra', haystack_dec_name='dec',
-                highest_metric='imag_kron'):
+                metric="imag_kron", n_ra = 'ra', n_dec = 'dec',
+                h_ra = 'ra', h_dec = 'dec'):
     """
-    Given the paths to needle and haystack, return a list of indices that lead
+    Given the needles and haystack, return a list of indices that lead
     from each needle object to a haystack object that is searched for using the
     given algorithm. 
     
+    Implemented with pandas. if n = len(needle) and m = len(haystack) then
+        O ~ O((m + n)(log(n) + 1))
+    
     @params
         needle, haystack
-            HDUlist objects (i.e. from fits.open()) which are to be crossmatched
+            Data frames. Haystack must be in chunks.
         method = "closest", "brightest", "circle", or "bayesian"
             Four methods for searching. Each do the following:
                 "closest"   - returns the closest object within the limit
@@ -400,68 +373,79 @@ def cross_match(needle, haystack, method="closest", radius=2,
         radius = 2
             Number of arc seconds to look within for the search. 
             Give limit <= 0 for no limit.
-        needle_ra_name, needle_dec_name, haystack_ra_name, haystack_dec_name
-            The names of the columns in the needle and haystack lists. 
-            Case insensitive.
+        metric
+            the key of the value to use for "brightest" or "bayesian" searches
+            in the haystack csv file
+        n_ra, n_dec, h_ra, h_dec = 'ra', 'dec', 'ra', 'dec'
+            The names of the keyes for ra and dec in needle and haystack
     
     @returns
         indices
-            A list of int indices of length = len(needle[1].data)
-            If "circle" is given, it will be a list of lists of closest indices.
-            Entry will be blank if there is no valid index for a given needle
-            object. 
+            A list of ints with shape (len(needle)) OR a list of lists of int
+            (but only if method = "circle").
+            
+            Entry will be None if no match was found (or an empty list for 
+            "circle")
     """
-    
-    needle_search_set =  ra_dec_to_xyz(needle[1].data[needle_ra_name],
-                                       needle[1].data[needle_dec_name])
-    needle_search_set = np.array([needle_search_set[0],
-                                  needle_search_set[1],
-                                  needle_search_set[2]]).T
-    haystack_search_set = ra_dec_to_xyz(haystack[1].data[haystack_ra_name], 
-                                        haystack[1].data[haystack_dec_name])
-    haystack_search_set = np.array([haystack_search_set[0],
-                                    haystack_search_set[1],
-                                    haystack_search_set[2]]).T
-    haystack_tree = spatial.KDTree(haystack_search_set)
+    #0. Prep some things
     radius_in_cartesian = 2*np.sin((2*np.pi*radius)/(2*3600*360))
-    indices = []
     if radius <= 0: #because we are projected on a unit sphere, 3 is more than enough.
         radius_in_cartesian = 3.0 
-    if method == "closest": #Just get the closest one
-        distances, indices = haystack_tree.query(needle_search_set, eps=0.0, k=1,
-                                                 distance_upper_bound = radius_in_cartesian)
-    else: #For the others we have to query a circle and check what we get
-        indices = haystack_tree.query_ball_point(needle_search_set, radius_in_cartesian)
-        if method == "circle": #just return the circle
+    metrics = []
+        
+    #1. Get the needle ra and dec, build the KDTree
+    ra, dec = needle[n_ra], needle[n_dec]
+    tree = spatial.KDTree(np.array(ra_dec_to_xyz(ra, dec)).T)
+    
+    #2. Use pandas chunker to iterate on the haystack
+    indices = [list() for i in len(ra)]
+    lengths = [list() for i in len(ra)]
+    if method == "highest" or method == "bayesian": metrics = [list() for i in len(ra)]
+    for chunk in haystack:
+        #i.   get ra, dec, and metric if applicable
+        ra, dec = chunk[h_ra], chunk[h_dec]
+        if method == "highest" or method == "bayesian":
+            metrics = metrics + chunk[metric].values
+        key = np.array(ra_dec_to_xyz(ra, dec)).T
+        
+        #ii.  search the tree
+        chunk_distances, chunk_indices = tree.query(key, k=1, distance_upper_bound = radius_in_cartesian)
+        
+        #iii. record results back to the indices list
+        for i in range(0, chunk.shape[0]):
+            if chunk_distances[i] < 3:
+                indices[chunk_indices[i]].append(chunk.index[i])
+                lengths[chunk_indices[i]].append(chunk_distances[i])
+                if method == "highest" or method == "bayesian":
+                    metrics[chunk_indices[i]].append(chunk[metric][chunk.index[i]])
+        
+    #3. Discern the correct values based on the given algorithm
+    if method == "circle": #just return the circle
+        return indices
+    elif method == "closest":
+        for i in range(0, len(indices)):
+            indices[i] = max(range(len(lengths[i])), default=None,
+                             key=lengths[i].__getitem)
+        return indices
+    else:
+        if method == "brightest":
+            for i in range(0, len(indices)):
+                indices[i] = max(range(len(metric[i])), default=None,
+                                 key=metric[i].__getitem)
             return indices
+        elif method == "bayesian":
+            raise NotImplementedError("method = bayesian is not implemented yet")
         else:
-            metric = haystack[1].data[highest_metric]
-            if method == "brightest": #return the index of the brightest, None if none
-                for i in range(0, len(indices)):
-                    metric_array = [metric[j] for j in indices[i]]
-                    indices[i] = max(range(len(metric_array)),
-                           key=metric_array.__getitem, default=None)
-            elif method == "bayesian":
-                raise NotImplementedError("method = bayesian is not implemented yet")
-            else:
-                raise ValueError("method = " + method +
-                                 "is not an allowed value for cross_match")
-    #clean up and return
-    haystack_tree = None
-    haystack_search_set = None
-    needle_search_set = None
-    gc.collect()
-    return indices
+            raise ValueError("method = " + method +
+                             "is not an allowed value for cross_match")
     
 def ra_dec_to_xyz(ra, dec):
     """
     Convert ra & dec to Euclidean points projected on a unit sphere
     
     dependencies: numpy
-
     @params
         ra, dec - ndarrays
-
     @returns
         x, y, z - ndarrays
     """
@@ -471,7 +455,7 @@ def ra_dec_to_xyz(ra, dec):
     sin_dec = np.sin(np.pi / 2 - dec * np.pi / 180.)
     cos_dec = np.cos(np.pi / 2 - dec * np.pi / 180.)
 
-    return  cos_ra * sin_dec, sin_ra * sin_dec, cos_dec
+    return  [cos_ra * sin_dec, sin_ra * sin_dec, cos_dec]
 
 
 def xyz_to_ra_dec(x, y, z):
@@ -479,10 +463,8 @@ def xyz_to_ra_dec(x, y, z):
     Convert back to RA and DEC
     
     dependencies: numpy
-
     @params
         ra, dec - ndarrays
-
     @returns
         x, y, z - ndarrays
     """
@@ -494,16 +476,14 @@ def xyz_to_ra_dec(x, y, z):
 
 def fits_to_csv(path, new_path, overwrite=False):
     """
-    Takes a fits file and turns it into a csv file using astropy.
+    Takes a fits file and turns it into an csv file using astropy.
     """
-    Table.read(path, hdu=1).write(new_path, overwrite=overwrite, format="ascii.csv")
-
-def csv_to_fits(path, new_path, overwrite=False):
-    """
-    Takes a csv file and turns it into a fits file using astropy.
-    """
-    Table.read(path, format="ascii.csv").write(new_path, overwrite=overwrite, format="fits")
+    raise NotImplementedError("""(Use topcat) - Overheard in code before crash:
+      
+                              Me:      'Astropy, convert this fits file into a
+                                        csv file so I can use pandas...'
+                              Astropy: 'I can't let you do that Cassandra.'
+                              Astropy: 'I'm scared Cassandra...'""")
     
 if __name__ == "__main__":
     main()
-    pass
