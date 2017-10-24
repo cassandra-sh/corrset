@@ -24,6 +24,7 @@ from scipy import spatial
 import time
 import sys
 import matplotlib.pyplot as plt
+import io
 import re
 import subprocess
 from matplotlib.colors import LogNorm
@@ -44,8 +45,13 @@ name_q  - quality cut catalog (whatever is decided on)
 """
 
 """Input parameters"""
-hsc_csize = 750000
-rand_csize = 10000000
+hsc_csize = 1500000
+rand_csize = 3000000
+
+#Some extra functionality for predicting how many rows there are
+n_hsc_rows = 38130959
+n_rand_rows = 52094203
+get_row_nums = False
 
 """Catalogs info"""
 #note: this version assumes the random is already assembled
@@ -129,6 +135,9 @@ def main():
          print("")
     report("Beginning builder.main()")
     
+    if get_row_nums:
+        pass
+    
 #    """
 #    Step 1: Venice flags for
 #                -rand_u_fits -> rand_v_fits
@@ -165,32 +174,62 @@ def main():
                 -rand_v -> rand_vw
                 -hsc_v  -> hsc_vw
     """
-    report("Flagging random catalog with wise mask")
-    add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=rand_csize, verbose=True)
     report("Flagging hsc catalog with wise mask")
-    add_wise_mask_column(p_hsc_v, p_hsc_vw, chunksize=hsc_csize, verbose=True)
-    
-    """
-    Step 4: Cross matches
-                -hsc_vw, specz -> hsc_f
-                -agn_u,  hsc_f -> agn_p
-                -agn_p,  sdss  -> agn_f
-    """
-    report("Cross matching HSC to Spec-Z")
-    file_cross_match(p_hsc_vw, p_specz, p_hsc_f,
-                     method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, sfx='_specz',
-                     chunksize=hsc_csize, verbose=True)
-    report("Cross matching WISE to HSC")
-    file_cross_match(p_agn_u, p_hsc_f, p_agn_p, chunksize=hsc_csize,
-                     method='brightest', radius=2, sfx='hsc1', verbose=True)
-    report("Cross matching WISE to SDSS")
-    file_cross_match(p_agn_p, p_sdss, p_agn_f, chunksize=hsc_csize, verbose=True,
-                     method='closest', radius=2, haystack_ra_name = specz_raname,
-                     haystack_dec_name = specz_decname, sfx='_sdss_t1')
+    add_wise_mask_column(p_hsc_v, p_hsc_vw, chunksize=hsc_csize, verbose=True,
+                         n_rows=n_hsc_rows)
+    report("Flagging random catalog with wise mask")
+    add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=rand_csize, verbose=True,
+                         n_rows=n_rand_rows)
+#    """
+#    Step 4: Cross matches
+#                -hsc_vw, specz -> hsc_f
+#                -agn_u,  hsc_f -> agn_p
+#                -agn_p,  sdss  -> agn_f
+#    """
+#    report("Cross matching HSC to Spec-Z")
+#    file_cross_match(p_hsc_vw, p_specz, p_hsc_f,
+#                     method='closest', radius=2, haystack_ra_name = specz_raname,
+#                     haystack_dec_name = specz_decname, sfx='_specz',
+#                     chunksize=hsc_csize, verbose=True, n_rows=None)
+#    report("Cross matching WISE to HSC")
+#    file_cross_match(p_agn_u, p_hsc_f, p_agn_p, chunksize=hsc_csize, n_rows=n_hsc_rows,
+#                     method='brightest', radius=2, sfx='hsc1', verbose=True)
+#    report("Cross matching WISE to SDSS")
+#    file_cross_match(p_agn_p, p_sdss, p_agn_f, chunksize=hsc_csize, verbose=True,
+#                     method='closest', radius=2, haystack_ra_name = specz_raname,
+#                     haystack_dec_name = specz_decname, sfx='_sdss_t1')
     
     report("Done")
 
+class ReplaceIOFile(io.TextIOBase):
+    def __init__(self, iobuffer, old_list, new_list):
+        self.iobuffer = iobuffer
+        self.old_list = old_list
+        self.new_list = new_list
+        self.buf0 = ''
+        self.buf1 = ''
+        self.sub_has_more = True
+
+    def read(self, size=None):
+        if size is None:
+            size = 2**16
+        while len(self.buf0) < size and self.sub_has_more:
+            eol = 0
+            while eol <= 0:
+                txt = self.iobuffer.read(size)
+                self.buf1 += txt
+                if len(txt) < size:
+                    self.sub_has_more = False
+                    eol = len(self.buf1) + 1
+                else:
+                    eol = self.buf1.rfind('\n') + 1
+            txt, self.buf1 = self.buf1[:eol], self.buf1[eol:]
+            for old, new in zip(self.old_list, self.new_list):
+                txt = txt.replace(old, new)
+            self.buf0 += txt
+        val, self.buf0 = self.buf0[:size], self.buf0[size:]
+        return val
+    
 def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=False):
     """
     Venice masks the fits at the given path. 
@@ -213,6 +252,39 @@ def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=Fal
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
     process.wait()
     
+def types_from_file(path):
+    #Figure out the data types by assuming the first values are definitely
+    #representative of the entire file.
+    file = open(path, 'r')
+    firstline = file.readline()
+    firstline = firstline.rstrip('\n')
+    secondline = file.readline().rstrip('\n')
+    names = firstline.split(",")
+    data = secondline.split(",")
+    dct = {}
+    for i in range(0, len(data)):
+        datum = data[i]
+        try: 
+            datum = np.int64(datum) 
+        except ValueError:
+            try:
+                datum = np.float64(datum)
+            except ValueError:
+                try:
+                    datum = np.bool(datum)
+                except ValueError:
+                    datum = object(datum)
+        dct[names[i]] = type(datum) 
+    file = None
+    gc.collect()
+    return dct
+
+def file_len(path):
+    #Figure out the number of lines in a file
+    with open(path) as f:
+        for i, l in enumerate(f):
+            pass
+    return i + 1
 
 def fits_to_csv(path, new_path, overwrite=False):
     """
@@ -224,9 +296,10 @@ def fits_to_csv(path, new_path, overwrite=False):
                " out=" + new_path)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
     process.wait()
+
     
 def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
-                         chunksize=10000, verbose=False):
+                         chunksize=10000, verbose=False, n_rows=None):
     """
     Apply the WISE mangle mask to a file. 
     
@@ -244,21 +317,29 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
     """
     #0. Prepare some things
     if verbose:
-        n_rows = int((sum(1 for row in open(unprocessed, 'r'))-1)/chunksize)
-        print("|", end="")
+        if n_rows == None:
+            n_rows = (int(file_len(unprocessed)/chunksize)+1)
+        else:
+            n_rows = int(n_rows/chunksize)+1
+        print("╠", end="")
         for i in range(n_rows): 
-            print("-", end="")
-        print("|")
-        print(" ", end="")
-        
+            print("═", end="")
+        print("╣")
+        print("╠", end="")
+    #Figure out the data types by assuming the first values are definitely
+    #representative of the entire file.
+    dct = types_from_file(unprocessed)
+    
     #1. Get the unprocessed csv in chunks
-    frame = pd.read_csv(unprocessed, chunksize=chunksize)
+    frame = pd.read_csv(ReplaceIOFile(open(unprocessed, 'r'),
+                                      ['Infinity'], ['inf']),
+                        chunksize=chunksize, dtype=dct)
     if chunksize == None: 
         frame = [frame]
         
     #2. Iterate through the chunks
     for chunk in frame:
-        if verbose: print("=", end="")
+        if verbose: print("█", end="")
         #i.   Get ra and dec
         ra = chunk[ra_name]
         dec = chunk[dec_name]
@@ -276,7 +357,7 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
         chunk = None
         gc.collect()
         
-    if verbose: print("|")
+    if verbose: print("╣")
 
 def wise_mask(ra, dec, mangle_files=wise_mangles):
     """
@@ -317,7 +398,7 @@ def wise_mask(ra, dec, mangle_files=wise_mangles):
 
 def file_cross_match(needle_path, haystack_path, new_needle_path,
                      method="closest", radius=2, prefix='', verbose=False,
-                     needle_ra_name='ra', needle_dec_name='dec',
+                     needle_ra_name='ra', needle_dec_name='dec', n_rows=None,
                      haystack_ra_name='ra', haystack_dec_name='dec',
                      metric='imag_kron', chunksize=10000, sfx="_cmatch"):
     """
@@ -354,14 +435,26 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
             If true, print some minimal diagnostics mid run to let the user know
             how much longer there is to go
     """
-    #0. Prepare some things.
-    needle = pd.read_csv(needle_path)
-    haystack = pd.read_csv(haystack_path, chunksize=chunksize)
+    #-1. Prepare some things.
+    #Figure out the data types by assuming the first values are definitely
+    #representative of the entire file.
+    needle_dct = types_from_file(needle_path)
+    haystack_dct = types_from_file(haystack_path)
+    
+    #0.  Getting the DataFrames 
+    needle = pd.read_csv(ReplaceIOFile(open(needle_path, 'r'),
+                                      ['Infinity'], ['inf']),
+                         dtype=needle_dct)
+    haystack = pd.read_csv(ReplaceIOFile(open(haystack_path, 'r'),
+                                      ['Infinity'], ['inf']),
+                           chunksize=chunksize, dtype=haystack_dct)
     if chunksize == None: haystack = [haystack]
-    n_rows = None
     if verbose:
         print("Running a cross match with " + needle_path + " and " + haystack_path)
-        n_rows = int((sum(1 for row in open(haystack_path, 'r'))-1)/chunksize)
+        if n_rows == None:
+            n_rows = int((file_len(haystack_path)-1)/chunksize)+1
+        else:
+            n_rows = int(n_rows/chunksize)+1
 
     #1. Get the indices of the matches
     haystack_indices = cross_match(needle, haystack, method=method,
@@ -373,7 +466,9 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
                                    metric = metric,
                                    verbose = verbose, n_rows = n_rows)
     #(reload haystack after iterating through chunks)
-    haystack = pd.read_csv(haystack_path, chunksize=chunksize) 
+    haystack = pd.read_csv(ReplaceIOFile(open(haystack_path, 'r'),
+                                      ['Infinity'], ['inf']),
+                           chunksize=chunksize, dtype=haystack_dct),
     if chunksize == None:
         haystack = [haystack]
     needle_indices = range(0, needle.shape[0])
@@ -382,13 +477,13 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
     frame_to_add = None
     if verbose:
         print("Using cross match result to add catalogs together")
-        print("|", end="")
+        print("╠", end="")
         for i in range(n_rows): 
-            print("-", end="")
-        print("|")
-        print(" ", end="")
+            print("═", end="")
+        print("╣")
+        print("╠", end="")
     for chunk in haystack:
-        if verbose: print("=", end="")
+        if verbose: print("█", end="")
         
         #i.   Figure out which indices are relevant to this chunk
         chunk_min, chunk_max = min(chunk.index), max(chunk.index)
@@ -407,7 +502,7 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         #iii.  Clean up
         chunk = None
         gc.collect()
-    if verbose: print("|")
+    if verbose: print("╣")
     
     #3. Attach the frame to add to the needle frame
     frame_to_add.set_index('index')
@@ -479,14 +574,14 @@ def cross_match(needle, haystack, method="closest", radius=2,
     n = 0
     if verbose:
         print("Doing a cross match")
-        print("|", end="")
+        print("╠", end="")
         for i in range(n_rows): 
-            print("-", end="")
-        print("|")
-        print(" ", end="")
+            print("═", end="")
+        print("╣")
+        print("╠", end="")
     for chunk in haystack:
         n = n + 1
-        if verbose: print("=", end="")
+        if verbose: print("█", end="")
         
         #i.   get ra, dec, and metric if applicable
         ra, dec = chunk[h_ra], chunk[h_dec]
@@ -509,7 +604,7 @@ def cross_match(needle, haystack, method="closest", radius=2,
         chunk = None
         gc.collect()
         
-    if verbose: print("|")
+    if verbose: print("╣")
         
     #3. Discern the correct values based on the given algorithm
     if method == "circle": #just return the circle
