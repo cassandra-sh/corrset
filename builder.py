@@ -4,11 +4,9 @@
 Created on Mon Oct 16 13:14:35 2017
 builder.py
 -Constructs the catalogs from scratch, step by step
-Steps, in order
-1. add venice flags
-2. turn fits into csvs
-3. add wise flags
-4. do the cross matches
+
+Using hdf files primarily
+
 @author: csh4
 """
 
@@ -25,10 +23,12 @@ import time
 import sys
 import matplotlib.pyplot as plt
 import io
+import warnings
 import re
 import subprocess
 from matplotlib.colors import LogNorm
 import psutil
+from ast import literal_eval
 import pandas as pd
 
 
@@ -57,29 +57,29 @@ get_row_nums = False
 #note: this version assumes the random is already assembled
 p_rand_u_fits = "/scr/depot0/csh4/cats/unprocessed/rand_u.fits"
 p_rand_v_fits = "/scr/depot0/csh4/cats/partial/rand_v.fits"
-p_rand_v =      "/scr/depot0/csh4/cats/partial/rand_v.csv"
-p_rand_vw =     "/scr/depot0/csh4/cats/partial/rand_vw.csv"
-p_rand_f =      "/scr/depot0/csh4/cats/processed/rand_f.csv"
+p_rand_v =      "/scr/depot0/csh4/cats/partial/rand_v.hdf5"
+p_rand_vw =     "/scr/depot0/csh4/cats/partial/rand_vw.hdf5"
+p_rand_f =      "/scr/depot0/csh4/cats/processed/rand_f.hdf5"
 
 p_agn_u_fits =  "/scr/depot0/csh4/cats/unprocessed/agn_u.fits"
-p_agn_u =       "/scr/depot0/csh4/cats/unprocessed/agn_u.csv"
-p_agn_p =       "/scr/depot0/csh4/cats/partial/agn_p.csv"     #1/2 cross matches done (hsc)
-p_agn_f =       "/scr/depot0/csh4/cats/processed/agn_f.csv"   #2/2 cross matches done (sdss)
+p_agn_u =       "/scr/depot0/csh4/cats/unprocessed/agn_u.hdf5"
+p_agn_p =       "/scr/depot0/csh4/cats/partial/agn_p.hdf5"     #1/2 cross matches done (hsc)
+p_agn_f =       "/scr/depot0/csh4/cats/processed/agn_f.hdf5"   #2/2 cross matches done (sdss)
 
 p_hsc_u_fits =  "/scr/depot0/csh4/cats/unprocessed/hsc_u.fits"
 p_hsc_v_fits =  "/scr/depot0/csh4/cats/partial/hsc_v.fits"
-p_hsc_v =       "/scr/depot0/csh4/cats/partial/hsc_v.csv"
-p_hsc_vw =      "/scr/depot0/csh4/cats/partial/hsc_vw.csv"
-p_hsc_f =       "/scr/depot0/csh4/cats/processed/hsc_f.fits"  #specz cross match done
+p_hsc_v =  "/scr/depot0/csh4/cats/partial/hsc_v.hdf5"
+p_hsc_vw =      "/scr/depot0/csh4/cats/partial/hsc_vw.hdf5"
+p_hsc_f =       "/scr/depot0/csh4/cats/processed/hsc_f.hdf5"  #specz cross match done
 
 p_specz_fits = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.fits"
-p_specz = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.csv"
-specz_raname   = 'ra2000  '
+p_specz = "/scr/depot0/csh4/cats/reference/DR1_specz_catalog.hdf5"
+specz_raname   = 'ra2000'
 specz_decname  = 'decl2000'
 specz_specname = 'redshift'
 
 p_sdss_fits = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.fits"
-p_sdss = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.csv"
+p_sdss = "/scr/depot0/csh4/cats/reference/sdss_quasar_cat.hdf5"
 mgII_name = 'FWHM_MGII'
 cIV_name  = 'FWHM_CIV'
 
@@ -94,9 +94,6 @@ file_in = "/scr/depot0/csh4/cats/unprocessed/rand_d.fits"
 file_out = "/scr/depot0/csh4/cats/unprocessed/rand_f.fits"
 
 sample_in = (venice + venice_masks + " -f all -cat " + file_in + " -xcol RA -ycol DEC -o " + file_out)
-
-#To run Venice from Python for file_in, file_out, use 
-#os.popen(sample_in)
 
 """Stilts info"""
 stilts = "/scr/depot0/csh4/tools/topcat/stilts"
@@ -127,12 +124,14 @@ def main():
     def current_time():
         return (int(time.clock()) - start_time)
     def report(report_string):
-         print(report_string)
-         print("Time is " + str(int(current_time()/60)) + " minutes from start. ", end="")
-         print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
-         sys.stdout.flush()
-         gc.collect()
-         print("")
+        sys.stdout.flush()
+        time = current_time()
+        print(report_string)
+        print("Time is " + str(float(time/60.)) + " minutes from start. ", end="")
+        print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
+        sys.stdout.flush()
+        gc.collect()
+        print("")
     report("Beginning builder.main()")
     
     if get_row_nums:
@@ -142,33 +141,31 @@ def main():
 #    Step 1: Venice flags for
 #                -rand_u_fits -> rand_v_fits
 #                -hsc_u_fits  -> hsc_v_fits
-#    Already done
+#    Already works/done
 #    """
 #    report("Flagging each relevant catalog with Venice")
 #    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
 #    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
-#    
+    
 #    """
-#    Step 2: FITS to csv for
+#    Step 2: FITS to hdf for
 #                -sdss_fits   -> sdss
 #                -specz_fits  -> specz
 #                -hsc_v_fits  -> hsc_v
 #                -rand_v_fits -> rand_v
 #                -agn_u_fits  -> agn_u
-#    
-#    Currently using topcat for this part    
+#       
 #    """
 #    report("File 1")
-#    fits_to_csv(p_sdss_fits, p_sdss, overwrite=True)
+#    fits_to_hdf(p_sdss_fits, p_sdss, overwrite=True)
 #    report("File 2")
-#    fits_to_csv(p_specz_fits, p_sdss, overwrite=True)
+#    fits_to_hdf(p_specz_fits, p_specz, overwrite=True)
 #    report("File 3")
-#    fits_to_csv(p_hsc_v_fits, p_hsc_v, overwrite=True)
+#    fits_to_hdf(p_hsc_v_fits, p_hsc_v, overwrite=True)
 #    report("File 4")
-#    fits_to_csv(p_rand_v_fits, p_rand_v, overwrite=True)
+#    fits_to_hdf(p_rand_v_fits, p_rand_v, overwrite=True)
 #    report("File 5")
-#    fits_to_csv(p_agn_u_fits, p_agn_u, overwrite=True)
-    
+#    fits_to_hdf(p_agn_u_fits, p_agn_u, overwrite=True)
     """
     Step 3: WISE flags for
                 -rand_v -> rand_vw
@@ -180,56 +177,32 @@ def main():
     report("Flagging random catalog with wise mask")
     add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=rand_csize, verbose=True,
                          n_rows=n_rand_rows)
-#    """
-#    Step 4: Cross matches
-#                -hsc_vw, specz -> hsc_f
-#                -agn_u,  hsc_f -> agn_p
-#                -agn_p,  sdss  -> agn_f
-#    """
-#    report("Cross matching HSC to Spec-Z")
-#    file_cross_match(p_hsc_vw, p_specz, p_hsc_f,
-#                     method='closest', radius=2, haystack_ra_name = specz_raname,
-#                     haystack_dec_name = specz_decname, sfx='_specz',
-#                     chunksize=hsc_csize, verbose=True, n_rows=None)
-#    report("Cross matching WISE to HSC")
-#    file_cross_match(p_agn_u, p_hsc_f, p_agn_p, chunksize=hsc_csize, n_rows=n_hsc_rows,
-#                     method='brightest', radius=2, sfx='hsc1', verbose=True)
-#    report("Cross matching WISE to SDSS")
-#    file_cross_match(p_agn_p, p_sdss, p_agn_f, chunksize=hsc_csize, verbose=True,
-#                     method='closest', radius=2, haystack_ra_name = specz_raname,
-#                     haystack_dec_name = specz_decname, sfx='_sdss_t1')
+
+    """
+    Step 4: Cross matches
+                -specz,  hsc_vw -> hsc_f (right join)
+                -agn_u,  hsc_f  -> agn_p (left  join)
+                -agn_p,  sdss   -> agn_f (left  join)
+    """
+    report("Cross matching HSC to Spec-Z")
+    file_cross_match(p_specz, p_hsc_vw, p_hsc_f,
+                     method='closest', radius=2, needle_ra_name = specz_raname,
+                     needle_dec_name = specz_decname, sfx='_sz', append="right",
+                     chunksize=hsc_csize, verbose=True, n_rows=n_hsc_rows)
+    
+    report("Cross matching WISE to HSC")
+    file_cross_match(p_agn_u, p_hsc_f, p_agn_p, chunksize=hsc_csize,
+                     n_rows=n_hsc_rows,  method='brightest', radius=2, 
+                     sfx='_hsc1', verbose=True, needle_ra_name = "RA",
+                     needle_dec_name = "DEC")
+    
+    report("Cross matching WISE to SDSS")
+    file_cross_match(p_agn_p, p_sdss, p_agn_f, chunksize=None, verbose=True,
+                     method='closest', radius=2, sfx='_sdss_t1')
     
     report("Done")
 
-class ReplaceIOFile(io.TextIOBase):
-    def __init__(self, iobuffer, old_list, new_list):
-        self.iobuffer = iobuffer
-        self.old_list = old_list
-        self.new_list = new_list
-        self.buf0 = ''
-        self.buf1 = ''
-        self.sub_has_more = True
 
-    def read(self, size=None):
-        if size is None:
-            size = 2**16
-        while len(self.buf0) < size and self.sub_has_more:
-            eol = 0
-            while eol <= 0:
-                txt = self.iobuffer.read(size)
-                self.buf1 += txt
-                if len(txt) < size:
-                    self.sub_has_more = False
-                    eol = len(self.buf1) + 1
-                else:
-                    eol = self.buf1.rfind('\n') + 1
-            txt, self.buf1 = self.buf1[:eol], self.buf1[eol:]
-            for old, new in zip(self.old_list, self.new_list):
-                txt = txt.replace(old, new)
-            self.buf0 += txt
-        val, self.buf0 = self.buf0[:size], self.buf0[size:]
-        return val
-    
 def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=False):
     """
     Venice masks the fits at the given path. 
@@ -251,33 +224,7 @@ def venice_mask(unprocessed, masked, ra_name='ra', dec_name='dec', overwrite=Fal
                      " -xcol " + ra_name + " -ycol " + dec_name + " -o " + o + masked)
     process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
     process.wait()
-    
-def types_from_file(path):
-    #Figure out the data types by assuming the first values are definitely
-    #representative of the entire file.
-    file = open(path, 'r')
-    firstline = file.readline()
-    firstline = firstline.rstrip('\n')
-    secondline = file.readline().rstrip('\n')
-    names = firstline.split(",")
-    data = secondline.split(",")
-    dct = {}
-    for i in range(0, len(data)):
-        datum = data[i]
-        try: 
-            datum = np.int64(datum) 
-        except ValueError:
-            try:
-                datum = np.float64(datum)
-            except ValueError:
-                try:
-                    datum = np.bool(datum)
-                except ValueError:
-                    datum = object(datum)
-        dct[names[i]] = type(datum) 
-    file = None
-    gc.collect()
-    return dct
+
 
 def file_len(path):
     #Figure out the number of lines in a file
@@ -286,17 +233,68 @@ def file_len(path):
             pass
     return i + 1
 
-def fits_to_csv(path, new_path, overwrite=False):
+def fits_to_hdf(path, new_path, overwrite=False):
     """
-    Takes a fits file and turns it into an csv file using astropy.
+    Take a fits file and use astropy to retrieve the data. Save the data in
+    an hdf5 table file.
     
-    UNTESTED
+    performance: low (astropy.io.fits memory limited)
+    
+    @params
+        path
+            Path to get the fits file from
+        new_path
+            Path to save the hdf5 table to
+        overwrite=False
+            If false, raise an error if something is already at new_path
     """
-    command = ("sh " + stilts + " -disk  tcopy ifmt=fits ofmt=csv in=" + path +
-               " out=" + new_path)
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE)
-    process.wait()
-
+    if overwrite == False and os.path.isfile(new_path):
+        raise IOError("Overwrite = False but there is a file at " + new_path)
+            
+#    Possible fitsio implementation:
+#
+#    #Make sure to populate names with the non-list column names first
+#
+#    #Get the fits file with fitsio
+#    fits=fitsio.FITS('data.fits')
+#        
+#    #Figure out a smart way to take into account the end of the file
+#    range1 = np.arange(0, filelimit, chunksize)
+#    range2 = np.arange(chunksize, filelimit, chunksize)
+#    range2[-1] = filelimit
+#    for i in range(len(range1)):
+#       dat = fits[1][range[1][i]:range2[i]]
+#       dct_to_add = {}
+#        for j in range(len(names)):
+#            dct_to_add[names[j]] = dat[names[j]]
+#        frame = pd.DataFrame.from_dict(dct_to_add)
+#        if i == 0:
+#            frame.to_hdf(new_path, mode='w', format="table", key="primary")
+#        else:
+#            frame.to_hdf(new_path, mode='a', append=True, format="table",
+#                         key="primary")
+            
+    
+    f = fits.open(path)
+    dat = f[1].data
+    names = f[1].columns.names
+    types = [f[1].columns.dtype[i] for i in range(len(names))]
+    
+    shapes = [len(np.shape(types[i])) for i in range(len(names))]
+    not_list_columns = np.where(np.less(shapes, 1))[0]
+    
+    if len(not_list_columns) == len(names):
+        frame = pd.DataFrame(data = dat)
+        frame.to_hdf(new_path, key="primary", format="table")
+    else:
+        dropped_names = [names[i] for i in np.where(np.greater(shapes,0))[0]]
+        warnings.warn(path + " has lists stored in columns " +
+                      str(dropped_names) + ", which will be dropped.")
+        dct = {}
+        for i in not_list_columns:
+            dct[names[i]] = dat[names[i]]
+        pd.DataFrame.from_dict(dct).to_hdf(new_path, key="primary",
+                              format="table")
     
 def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
                          chunksize=10000, verbose=False, n_rows=None):
@@ -308,6 +306,8 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
     
     For this one, higher chunksize is much better and will improve performance
     if memory is available.
+    
+    performance: low
     
     @params
         unprocessed       - name of the file to mask
@@ -326,17 +326,13 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
             print("═", end="")
         print("╣")
         print("╠", end="")
-    #Figure out the data types by assuming the first values are definitely
-    #representative of the entire file.
-    dct = types_from_file(unprocessed)
     
     #1. Get the unprocessed csv in chunks
-    frame = pd.read_csv(ReplaceIOFile(open(unprocessed, 'r'),
-                                      ['Infinity'], ['inf']),
-                        chunksize=chunksize, dtype=dct)
+    frame = pd.read_hdf(unprocessed, chunksize=chunksize)
     if chunksize == None: 
         frame = [frame]
-        
+    
+    n = 0    
     #2. Iterate through the chunks
     for chunk in frame:
         if verbose: print("█", end="")
@@ -352,7 +348,12 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
         #iv.  Add it to the DataFrame
         chunk['wise_flag']  = array_to_add
         #v.   Append to the csv
-        chunk.to_csv(masked, mode='a')
+        if n == 0:
+            chunk.to_hdf(masked, mode='w', format="table", key="primary")
+            n = 1
+        else:
+            chunk.to_hdf(masked, mode='a', append=True, format="table",
+                         key="primary")
         #vi.  Clean up
         chunk = None
         gc.collect()
@@ -367,6 +368,8 @@ def wise_mask(ra, dec, mangle_files=wise_mangles):
     returns the indices.
     
     Dependencies: numpy, astropy.coordinates.SkyCoord, mangle
+    
+    performance: medium (probably max)
     
     @params
         ra_list, dec_list
@@ -396,19 +399,22 @@ def wise_mask(ra, dec, mangle_files=wise_mangles):
         ins_true = np.logical_or(ins_true, ins[j])
     return np.where(ins_true == False)[0]
 
-def file_cross_match(needle_path, haystack_path, new_needle_path,
+def file_cross_match(needle_path, haystack_path, new_path,
                      method="closest", radius=2, prefix='', verbose=False,
                      needle_ra_name='ra', needle_dec_name='dec', n_rows=None,
                      haystack_ra_name='ra', haystack_dec_name='dec',
-                     metric='imag_kron', chunksize=10000, sfx="_cmatch"):
+                     metric='imag_kron', chunksize=10000, sfx="_cmatch", 
+                     append='left'):
     """
     Does a cross match with the given file paths, using cross_match
 
+    performance: not sure yet, high priority
+    
     @params
         needle_path, haystack_path
-            paths to fits files which are to be crossmatched
-        new_needle_path
-            path to save the new fits file to
+            paths to hdf5 files which are to be crossmatched
+        new_path
+            path to save the new hdf5 to
         method = "closest", "brightest", "circle", or "bayesian"
             Three methods for searching. Each do the following:
                 "closest"   - returns the closest object within the limit
@@ -434,21 +440,21 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         verbose
             If true, print some minimal diagnostics mid run to let the user know
             how much longer there is to go
-    """
-    #-1. Prepare some things.
-    #Figure out the data types by assuming the first values are definitely
-    #representative of the entire file.
-    needle_dct = types_from_file(needle_path)
-    haystack_dct = types_from_file(haystack_path)
-    
+        sfx = "_cmatch"
+            String to append to each cross matched column
+        n_rows = None
+            Number of rows in haystack. Optional parameter, which will be used
+            (and generated if not provided) if and only if verbose is true
+        append = "left" or "right"
+            "left"  - Add haystack columns to needle and save
+            "right" - Add needle columns to haystack and save        
+    """    
     #0.  Getting the DataFrames 
-    needle = pd.read_csv(ReplaceIOFile(open(needle_path, 'r'),
-                                      ['Infinity'], ['inf']),
-                         dtype=needle_dct)
-    haystack = pd.read_csv(ReplaceIOFile(open(haystack_path, 'r'),
-                                      ['Infinity'], ['inf']),
-                           chunksize=chunksize, dtype=haystack_dct)
-    if chunksize == None: haystack = [haystack]
+    needle = pd.read_hdf(needle_path)
+    haystack = pd.read_hdf(haystack_path, chunksize=chunksize)
+    
+    #Wrap haystack in a list if not using Chunker
+    if chunksize == None: haystack = [haystack] 
     if verbose:
         print("Running a cross match with " + needle_path + " and " + haystack_path)
         if n_rows == None:
@@ -466,11 +472,10 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
                                    metric = metric,
                                    verbose = verbose, n_rows = n_rows)
     #(reload haystack after iterating through chunks)
-    haystack = pd.read_csv(ReplaceIOFile(open(haystack_path, 'r'),
-                                      ['Infinity'], ['inf']),
-                           chunksize=chunksize, dtype=haystack_dct),
+    haystack = pd.read_hdf(haystack_path, chunksize=chunksize)
     if chunksize == None:
         haystack = [haystack]
+        
     needle_indices = range(0, needle.shape[0])
     
     #2. Iterate through the haystack adding the relevant entries to needle
@@ -478,8 +483,7 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
     if verbose:
         print("Using cross match result to add catalogs together")
         print("╠", end="")
-        for i in range(n_rows): 
-            print("═", end="")
+        for i in range(n_rows): print("═", end="")
         print("╣")
         print("╠", end="")
     for chunk in haystack:
@@ -494,8 +498,15 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         relevant_haystack_indices = [haystack_indices[i] for i in relevant_indices]
         
         #ii.  Append relevant haystack entries the frame_to_add object
-        attach = haystack.iloc[relevant_haystack_indices]
-        attach["index"] = relevant_needle_indices
+        if append == "left":
+            attach = haystack.iloc[relevant_haystack_indices]
+            attach["index"] = relevant_needle_indices
+        elif append == "right":
+            attach = needle.iloc[relevant_needle_indices]
+            attach["index"] = relevant_haystack_indices
+        else: raise ValueError("append = " + str(append) +
+                              " is not 'left' or 'right'")
+        
         if frame_to_add == None: frame_to_add = attach
         else: frame_to_add = frame_to_add.append(attach, ignore_index=True)
         
@@ -504,12 +515,31 @@ def file_cross_match(needle_path, haystack_path, new_needle_path,
         gc.collect()
     if verbose: print("╣")
     
-    #3. Attach the frame to add to the needle frame
+    #3. Attach the frame to add to the desired frame and save
     frame_to_add.set_index('index')
-    needle = needle.join(attach, rsuffix=sfx)
     
-    #4. Save the new (needle) object
-    needle.to_csv(new_needle_path)
+    if append == "left":
+        needle = needle.join(frame_to_add, rsuffix=sfx)
+        needle.to_hdf(new_path, key='primary', format="table")
+    elif append == "right":
+        #(reload haystack one last time)
+        haystack = pd.read_hdf(haystack_path, chunksize=chunksize)
+        if chunksize == None:
+            haystack = [haystack]
+        
+        #Iterate through haystack chunks, saving to the new path
+        n = 0
+        for fistful_of_hay in haystack:
+            fistful_of_hay = fistful_of_hay.join(frame_to_add, rsuffix=sfx)
+            if n == 0:
+                fistful_of_hay.to_hdf(new_path, mode='w', format="table", key="primary")
+                n = 1
+            else:
+                fistful_of_hay.to_hdf(new_path, mode='a', header=False,
+                                      append=True, format="table",
+                                      key="primary")
+    else: raise ValueError("append = " + str(append) +
+                           " is not 'left' or 'right'")
     
 
 def cross_match(needle, haystack, method="closest", radius=2,
@@ -522,6 +552,8 @@ def cross_match(needle, haystack, method="closest", radius=2,
     
     Implemented with pandas. if n = len(needle) and m = len(haystack) then
         O ~ O((m + n)(log(n) + 1))
+    
+    performance: medium, probably max
     
     @params
         needle, haystack
@@ -561,16 +593,15 @@ def cross_match(needle, haystack, method="closest", radius=2,
     if radius <= 0: #because we are projected on a unit sphere, 3 is more than enough.
         radius_in_cartesian = 3.0 
     metrics = []
-        
+    
     #1. Get the needle ra and dec, build the KDTree
-    print("growing a tree")
     ra, dec = needle[n_ra], needle[n_dec]
     tree = spatial.KDTree(np.array(ra_dec_to_xyz(ra, dec)).T)
     
     #2. Use pandas chunker to iterate on the haystack
-    indices = [list() for i in len(ra)]
-    lengths = [list() for i in len(ra)]
-    if method == "highest" or method == "bayesian": metrics = [list() for i in len(ra)]
+    indices = [list() for i in ra]
+    lengths = [list() for i in ra]
+    if method == "highest" or method == "bayesian": metrics = [list() for i in ra]
     n = 0
     if verbose:
         print("Doing a cross match")
