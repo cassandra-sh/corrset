@@ -32,10 +32,10 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
     Chunksize effects right, so always put the larger file as right and
     the smaller as left.
     """
-    start_time = int(time.clock())
+    start_time = int(time.time())
     #Defining a couple in-method helper functions
     def current_time():
-        return (int(time.clock()) - start_time)
+        return (int(time.time()) - start_time)
     def report(report_string):
         if verbose:
             sys.stdout.flush()
@@ -43,7 +43,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             print("")
             print("--- cross_match.file_cross_match() reporting ---")
             print(report_string)
-            print("Time is " + str(float(time/60.)) + " minutes from start. ", end="")
+            print("Time is " + str(time) + " seconds from start. ", end="")
             print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
             print("")
             sys.stdout.flush()
@@ -127,12 +127,47 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             
             n = n + 1
         
-        #5. Correct the indexing to match the left side and attach.
         chunks.close()
-        report("Appending DataFrame")
-        frame_to_add.set_index('index')
+        
+        
+        #6. Get the left frame to append to and merge them. 
+        report("Joining the cross matched catalog")
         left_df = pd.read_hdf(left, key="primary", mode="r+")
+        
+        #Correct the indexing to match the left side
+        frame_to_add.set_index('index', inplace=True)
+        
+        #Preserve the datatypes befor merging
+        dct = left_df.dtypes.to_dict()
+        dct.update(frame_to_add.dtypes.to_dict())
+        
+        #And merge them
         left_df = left_df.join(frame_to_add, rsuffix=suffix)
+        
+        #7. This joining fills non matched values with "nan". We need to replace
+        #   these values with appropriate values for their data types. 
+        new_col_names = left_df.columns
+        new_datatypes = left_df.dtypes
+        #For each column, will with the appropriate values
+        for i in range(0, len(left_df.columns)):
+            new_dtype = new_datatypes[i]
+            old_dtype = dct[new_col_names[i]]
+            
+            if new_dtype == old_dtype:
+                pass
+            else:
+                fillval = "nan"
+                if "int" in str(old_dtype):
+                    fillval = -1
+                elif "bool" in str(old_dtype):
+                    fillval = False
+                left_df[new_col_names[i]].fillna(fillval, inplace=True)
+        
+        #Cast everything as the original datatype
+        left_df = left_df.apply(lambda x: x.astype(dct[x.name]))
+        
+        #8. And save, finally. 
+        report("Saving the new hdf")
         left_df.to_hdf(new, key='primary', format="table")
         
     elif append == "right":    
@@ -163,6 +198,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         #4. Get out the whole left DataFrame for appending to the right
         report("Preparing to save results")
         left_df = pd.read_hdf(left, key="primary", mode="r+")
+        dct = left_df.dtypes.to_dict()
         
         #5. With the indices of the cross match, iterate through the right side
         #   and append the cross matched left rows to the right, then save.
@@ -176,6 +212,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             chunk_max = max(chunk_indices)
             chunk_min = min(chunk_indices)
             
+            
             #Figure out the indices from the cross match which correspond to 
             #this chunk. 
             relevant = np.logical_and(np.less(indices, chunk_max),
@@ -188,12 +225,36 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             #the minimum of the chunk before calling chunk.iloc[]
             relevant_right_indices = [indices[i]-chunk_min for i in relevant_indices]
             
+            #Preserve the data types of the chunk (only bother doing this once)
+            if n == 0: dct.update(chunk.dtypes.to_dct())
+            
             #Get the rows of those indices from the left DataFrame and attach to
             #the chunk. 
             attach = left_df.iloc[relevant_left_indices]
             attach["index"] = relevant_right_indices
-            attach.set_index("index")
+            attach.set_index("index", inplace=True)
             chunk = chunk.join(attach, rsuffix=suffix)
+            
+            #Fix the 'nan' values we just added for non matches when joining to
+            #appropriate values for each column's data type
+            new_col_names = chunk.columns
+            new_datatypes = chunk.dtypes
+            for i in range(0, len(chunk.columns)):
+                new_dtype = new_datatypes[i]
+                old_dtype = dct[new_col_names[i]]
+                
+                if new_dtype == old_dtype:
+                    pass
+                else:
+                    fillval = "nan"
+                    if "int" in str(old_dtype):
+                        fillval = -1
+                    elif "bool" in str(old_dtype):
+                        fillval = False
+                    chunk[new_col_names[i]].fillna(fillval, inplace=True)
+            
+            #Cast everything as the original datatype
+            chunk = chunk.apply(lambda x: x.astype(dct[x.name]))
             
             #Save to the new path
             if n == 0:
@@ -239,7 +300,8 @@ def tree_query_multi(tree, ra, dec, rad, algorithm, metric=None):
     for p in processes:
         p.join()
         
-    return list(indices)
+    
+    return indices[:]
 
 def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn, n):
     """
@@ -263,22 +325,11 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
                 indices_to_add[i] = indices_to_add[i][min(range(len(metrics)),
                                                       key=metrics.__getitem__)]
     elif algorithm == "closest":
-        indices_to_add, distances = tree.query(key)
+        indices_to_add, distances = tree.query(key, k=1, distance_upper_bound=rad)
     else:
         raise ValueError("algorithm == " + algorithm +
                          " is not valid for multiprocessed tree search")
-    
     indices[group[0]:group[1]] = indices_to_add
-#    
-#    written = False
-#    while not written:
-#        if turn.value == n: #Wait for your turn...
-#            for i in indices_to_add:
-#                indices.append(i) #Have to use .append() on this ListProxy object
-#            turn.value = turn.value + 1
-#            written = True
-#        else:
-#            time.sleep(3)
 
 
 def get_ra_dec_file(filename, ra_name, dec_name, chunksize=None, met=None):
