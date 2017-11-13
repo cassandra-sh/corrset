@@ -12,24 +12,17 @@ does not.
 """
 
 import os
-import healpy as hp
 import numpy as np
 import pymangle
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.io import fits
 import gc
-from scipy import spatial
 import time
 import sys
-import matplotlib.pyplot as plt
-import io
 import warnings
-import re
 import subprocess
-from matplotlib.colors import LogNorm
 import psutil
-from ast import literal_eval
 import pandas as pd
 import multiprocessing as mp
 import cross_match as cm
@@ -128,9 +121,9 @@ def main():
     """
     Build everything from scratch. Comment out the finished parts.
     """
-    start_time = int(time.clock())
+    start_time = int(time.time())
     def current_time():
-        return (int(time.clock()) - start_time)
+        return (int(time.time()) - start_time)
     def report(report_string):
         sys.stdout.flush()
         time = current_time()
@@ -185,22 +178,22 @@ def main():
 #    report("Flagging random catalog with wise mask")
 #    add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=rand_csize, verbose=True,
 #                         n_rows=n_rand_rows, overwrite=True)
-#
-#    """
-#    Step 4: Cross matches
-#                -specz,  agn_u  -> agn_sz (right join)
-#                -agn_sz, hsc_vw -> agn_p (left  join)
-#                -agn_p,  sdss   -> agn_f (left  join)
-#                -specz,  hsc_vw -> hsc_f (right join)
-#    Remember - the right value for cross match should be the larger hdf
-#    """
+
+    """
+    Step 4: Cross matches
+                -specz,  agn_u  -> agn_sz (right join)
+                -agn_sz, hsc_vw -> agn_p (left  join)
+                -agn_p,  sdss   -> agn_f (left  join)
+                -specz,  hsc_vw -> hsc_f (right join)
+    Remember - the right value for cross match should be the larger hdf
+    """
     
-#    report("Cross matching WISE to Spec-Z")
-#    cm.file_cross_match(p_agn_u, p_specz, p_agn_sz, '_sz', agn_csize,
-#                        algorithm = "closest", append='left',
-#                        left_ran = "RA", left_decn = "DEC",
-#                        right_ran = specz_raname, right_decn = specz_decname)
-#    
+    report("Cross matching WISE to Spec-Z")
+    cm.file_cross_match(p_agn_u, p_specz, p_agn_sz, '_sz', agn_csize,
+                        algorithm = "closest", append='left',
+                        left_ran = "RA", left_decn = "DEC",
+                        right_ran = specz_raname, right_decn = specz_decname)
+    
     report("Cross matching WISE to HSC")
     cm.file_cross_match(p_agn_sz, p_hsc_vw, p_agn_p, '_hsc1', hsc_csize, 
                         right_metric="imag_kron", algorithm = "lowest",
@@ -309,8 +302,8 @@ def fits_to_hdf(path, new_path, overwrite=False):
         dct = {}
         for i in not_list_columns:
             dct[names[i]] = dat[names[i]]
-        pd.DataFrame.from_dict(dct).to_hdf(new_path, key="primary",
-                                           format="table")
+        frame = pd.DataFrame.from_dict(dct)
+        frame.to_hdf(new_path, key="primary",format="table")
     
 def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
                          chunksize=10000, verbose=False, n_rows=None,
