@@ -307,12 +307,16 @@ def tree_query_multi(tree, ra, dec, rad, algorithm, metric=None):
     """
     n_jobs = mp.cpu_count()
     n_ra = len(ra)
+    
+    #List of slices for the left indices, to divide up the jobs
     group_bounds = np.linspace(0, n_ra, n_jobs+1, dtype=int)
     group_pairs = [[group_bounds[i], group_bounds[i+1]] for i in range(0, n_jobs)]
     
+    #Turn counter and list of processes
     turn = mp.Value('i', 0)
     processes = []
     
+    #The thing to return eventually, shape=left, points to right
     indices_empty = np.zeros(n_ra, dtype=int)
     indices_empty.fill(-1)
     indices_empty = indices_empty.tolist()
@@ -349,16 +353,22 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
     elif algorithm == "lowest":
         #Get the indices (shape = left, points to right)
         indices_to_add = tree.query_ball_point(key, rad)
+        
+        print("Shape: " + str(np.shape(indices_to_add)))
+        print("Group: " + str(group))
+        print("Max: " + str(max(indices_to_add)))
+        print("Min: " + str(min(indices_to_add)))
+        print("ra shape: " + str(np.shape(ra)))
+        
         for i in range(0, len(indices_to_add)):
             #Set the entry to -1 if no entries are found
             if len(indices_to_add[i]) == 0:
                 indices_to_add[i] = -1
             #Otherwise get the metric specified and take the lowest value
             #In most cases, this is the most negative magnitude, corresponding
-            #to the brightest neighbor within rad. Make sure to add the slice
-            #indexing back in for selecting the metric values.
+            #to the brightest neighbor within rad. 
             else:
-                metrics = [metric[j+group[0]] for j in indices_to_add[i]]
+                metrics = [metric[j] for j in indices_to_add[i]]
                 indices_to_add[i] = indices_to_add[i][min(range(len(metrics)),
                                                       key=metrics.__getitem__)]
     elif algorithm == "closest":
