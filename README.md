@@ -11,4 +11,4 @@ This code is divided into several parts
 3. corrset.py
     This part makes a corrset, which can be used to produce jackknife resampled auto and cross correlations quickly. The computation time will be frontloaded in making the corrset, and producing different products with it should be fast. 
 
-There will also be a file called director.py which interfaces will all of these for science results.
+There may eventually be a file called director.py which interfaces will all of these for science results.
