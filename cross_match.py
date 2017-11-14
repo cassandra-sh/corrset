@@ -96,7 +96,10 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         left_indices = range(0, len(indices))
         for chunk in chunks:
             #Try to print 10-ish times, rather than n_chunks times
-            if n % int(n_chunks/10) == 0: 
+            if n_chunks > 10:
+                if n % int(n_chunks/10) == 0: 
+                    report("Adding for chunk " + str(n+1) + " of " + str(n_chunks) + ".")
+            else:
                 report("Adding for chunk " + str(n+1) + " of " + str(n_chunks) + ".")
             chunk_indices = chunk.index
             chunk_max = max(chunk_indices)
@@ -137,12 +140,19 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         #Correct the indexing to match the left side
         frame_to_add.set_index('index', inplace=True)
         
+        #Add the suffix to the columns to be added
+        names = frame_to_add.columns
+        namechange = {}
+        for n in names:
+            namechange[n] = str(n+suffix)
+        frame_to_add.rename(columns=namechange, inplace=True)
+        
         #Preserve the datatypes befor merging
         dct = left_df.dtypes.to_dict()
         dct.update(frame_to_add.dtypes.to_dict())
         
-        #And merge them
-        left_df = left_df.join(frame_to_add, rsuffix=suffix)
+        #And merge them. 
+        left_df = left_df.join(frame_to_add, rsuffix="___")
         
         #7. This joining fills non matched values with "nan". We need to replace
         #   these values with appropriate values for their data types. 
@@ -196,9 +206,16 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
                                    radius_in_cartesian, algorithm)
         
         #4. Get out the whole left DataFrame for appending to the right
+        #   and make sure to rename the DataFrame's columns with the suffix added
         report("Preparing to save results")
-        left_df = pd.read_hdf(left, key="primary", mode="r+")
+        left_df = pd.read_hdf(left, key="primary", mode="r+")        
+        names = left_df.columns
+        namechange = {}
+        for n in names:
+            namechange[n] = str(n+suffix)
+        left_df.rename(columns=namechange, inplace=True)        
         dct = left_df.dtypes.to_dict()
+             
         
         #5. With the indices of the cross match, iterate through the right side
         #   and append the cross matched left rows to the right, then save.
@@ -207,7 +224,14 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         n = 0
         frame_to_add = 0
         left_indices = range(0, len(indices))
-        for chunk in chunks:
+        for chunk in chunks:            
+            #Try to print 10-ish times, rather than n_chunks times
+            if n_chunks > 10:
+                if n % int(n_chunks/10) == 0: 
+                    report("Adding for chunk " + str(n+1) + " of " + str(n_chunks) + ".")
+            else:
+                report("Adding for chunk " + str(n+1) + " of " + str(n_chunks) + ".")
+                
             chunk_indices = chunk.index
             chunk_max = max(chunk_indices)
             chunk_min = min(chunk_indices)
@@ -226,7 +250,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             relevant_right_indices = [indices[i]-chunk_min for i in relevant_indices]
             
             #Preserve the data types of the chunk (only bother doing this once)
-            if n == 0: dct.update(chunk.dtypes.to_dct())
+            if n == 0: dct.update(chunk.dtypes.to_dict())
             
             #Get the rows of those indices from the left DataFrame and attach to
             #the chunk. 
@@ -299,7 +323,8 @@ def tree_query_multi(tree, ra, dec, rad, algorithm, metric=None):
         processes[-1].start()
     for p in processes:
         p.join()
-        
+    for p in processes:
+        p.terminate()
     
     return indices[:]
 
@@ -330,6 +355,16 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
         raise ValueError("algorithm == " + algorithm +
                          " is not valid for multiprocessed tree search")
     indices[group[0]:group[1]] = indices_to_add
+#    
+#    written = False
+#    while not written:
+#        if turn.value == n: #Wait for your turn...
+#            for i in indices_to_add:
+#                indices.append(i) #Have to use .append() on this ListProxy object
+#            turn.value = turn.value + 1
+#            written = True
+#        else:
+#            time.sleep(3)
 
 
 def get_ra_dec_file(filename, ra_name, dec_name, chunksize=None, met=None):
