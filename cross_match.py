@@ -61,15 +61,12 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
     report("About to start cross match algorithm")    
     
     if append == "left":
-        #1. Get the left side and build the tree to search with.
-        report("Getting tree data and growing tree (left)")
+        #1. Get the left and
+        report("Getting search data (left)")
         left_ra, left_dec = get_ra_dec_file(left, left_ran, left_decn)
-        a, b, c = ra_dec_to_xyz(left_ra, left_dec)
-        left_search_set = np.array([a, b, c]).T
-        tree = spatial.KDTree(left_search_set)
         
-        #2. Get the right side
-        report("Getting tree search data (right)")
+        #right sides
+        report("Getting search data (right)")
         right_ra, right_dec, right_metric_values = [], [], None
         if right_metric != None and algorithm != "closest":
             right_ra, right_dec, right_metric_values = get_ra_dec_file(right,
@@ -80,10 +77,16 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         else:
             right_ra, right_dec, = get_ra_dec_file(right,right_ran,right_decn,
                                                    chunksize=chunksize)
-            
+        a, b, c = ra_dec_to_xyz(right_ra, right_dec)
+        right_search_set = np.array([a, b, c]).T
+        
+        #2. Grow the tree
+        report("Growing the tree")
+        tree = spatial.KDTree(right_search_set)
+        
         #3. Feed to the multiprocessing tree search function
         report("Searching tree")
-        indices = tree_query_multi(tree, right_ra, right_dec,
+        indices = tree_query_multi(tree, left_ra, left_dec,
                                    radius_in_cartesian, algorithm,
                                    metric=right_metric_values)
         
@@ -334,19 +337,28 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
     
     With the given inputs, do a search of the tree and save it to the path.
     """
+    #Get the ordered slice of the ra and dec and prepare to search the tree with it
     good_ra, good_dec = ra[group[0]:group[1]], dec[group[0]:group[1]]
     a, b, c = ra_dec_to_xyz(good_ra, good_dec)
     key = np.array([a, b, c]).T
+    
+    #Do a search with the appropriate algorithm.
     if algorithm == "bayesian":
         raise NotImplemented("algorithm == " + algorithm +
                              " is not implemented")
     elif algorithm == "lowest":
+        #Get the indices (shape = left, points to right)
         indices_to_add = tree.query_ball_point(key, rad)
         for i in range(0, len(indices_to_add)):
+            #Set the entry to -1 if no entries are found
             if len(indices_to_add[i]) == 0:
                 indices_to_add[i] = -1
+            #Otherwise get the metric specified and take the lowest value
+            #In most cases, this is the most negative magnitude, corresponding
+            #to the brightest neighbor within rad. Make sure to add the slice
+            #indexing back in for selecting the metric values.
             else:
-                metrics = [metric[i] for i in indices_to_add[i]]
+                metrics = [metric[j+group[0]] for j in indices_to_add[i]]
                 indices_to_add[i] = indices_to_add[i][min(range(len(metrics)),
                                                       key=metrics.__getitem__)]
     elif algorithm == "closest":
@@ -354,17 +366,13 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
     else:
         raise ValueError("algorithm == " + algorithm +
                          " is not valid for multiprocessed tree search")
+        
+    #We lost the indexing from taking a slice to search the tree, so we need to
+    #re-adjust the indices to align with the full dataframe
+    indices_to_add = (np.array(indices_to_add) + group[0])
+    
+    #Add to the shared array
     indices[group[0]:group[1]] = indices_to_add
-#    
-#    written = False
-#    while not written:
-#        if turn.value == n: #Wait for your turn...
-#            for i in indices_to_add:
-#                indices.append(i) #Have to use .append() on this ListProxy object
-#            turn.value = turn.value + 1
-#            written = True
-#        else:
-#            time.sleep(3)
 
 
 def get_ra_dec_file(filename, ra_name, dec_name, chunksize=None, met=None):
