@@ -138,46 +138,46 @@ def main():
     if get_row_nums:
         pass
     
-#    """
-#    Step 1: Venice flags for
-#                -rand_u_fits -> rand_v_fits
-#                -hsc_u_fits  -> hsc_v_fits
-#    Already works/done
-#    """
-#    report("Flagging each relevant catalog with Venice")
-#    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
-#    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
+    """
+    Step 1: Venice flags for
+                -rand_u_fits -> rand_v_fits
+                -hsc_u_fits  -> hsc_v_fits
+    Already works/done
+    """
+    report("Flagging each relevant catalog with Venice")
+    venice_mask(p_rand_u_fits, p_rand_v_fits, overwrite=True)
+    venice_mask(p_hsc_u_fits, p_hsc_v_fits, overwrite=True)
     
-#    """
-#    Step 2: FITS to hdf for
-#                -sdss_fits   -> sdss
-#                -specz_fits  -> specz
-#                -hsc_v_fits  -> hsc_v
-#                -rand_v_fits -> rand_v
-#                -agn_u_fits  -> agn_u
-#       
-#    """
-#    report("File 1")
-#    fits_to_hdf(p_sdss_fits, p_sdss, overwrite=True)
-#    report("File 2")
-#    fits_to_hdf(p_specz_fits, p_specz, overwrite=True)
-#    report("File 3")
-#    fits_to_hdf(p_hsc_v_fits, p_hsc_v, overwrite=True)
-#    report("File 4")
-#    fits_to_hdf(p_rand_v_fits, p_rand_v, overwrite=True)
-#    report("File 5")
-#    fits_to_hdf(p_agn_u_fits, p_agn_u, overwrite=True)
-#    """
-#    Step 3: WISE flags for
-#                -rand_v -> rand_vw
-#                -hsc_v  -> hsc_vw
-#    """
-#    report("Flagging hsc catalog with wise mask")
-#    add_wise_mask_column(p_hsc_v, p_hsc_vw, chunksize=hsc_csize, verbose=True,
-#                         n_rows=n_hsc_rows, overwrite=True)
-#    report("Flagging random catalog with wise mask")
-#    add_wise_mask_column(p_rand_v, p_rand_vw, chunksize=rand_csize, verbose=True,
-#                         n_rows=n_rand_rows, overwrite=True)
+    """
+    Step 2: FITS to hdf for
+                -sdss_fits   -> sdss
+                -specz_fits  -> specz
+                -hsc_v_fits  -> hsc_v
+                -rand_v_fits -> rand_v
+                -agn_u_fits  -> agn_u
+       
+    """
+    report("File 1")
+    fits_to_hdf(p_sdss_fits, p_sdss, overwrite=True)
+    report("File 2")
+    fits_to_hdf(p_specz_fits, p_specz, overwrite=True)
+    report("File 3")
+    fits_to_hdf(p_hsc_v_fits, p_hsc_v, overwrite=True)
+    report("File 4")
+    fits_to_hdf(p_rand_v_fits, p_rand_v, overwrite=True)
+    report("File 5")
+    fits_to_hdf(p_agn_u_fits, p_agn_u, overwrite=True)
+    """
+    Step 3: WISE flags for
+                -rand_v -> rand_vw
+                -hsc_v  -> hsc_vw
+    """
+    report("Flagging hsc catalog with wise mask")
+    add_wise_mask_column(p_hsc_v, p_hsc_vw, chunksize=hsc_csize, verbose=True,
+                         n_rows=n_hsc_rows, overwrite=True)
+    report("Flagging random catalog with wise mask")
+    add_wise_mask_column(p_rand_v, p_rand_f, chunksize=rand_csize, verbose=True,
+                         n_rows=n_rand_rows, overwrite=True)
 
     """
     Step 4: Cross matches
@@ -198,11 +198,12 @@ def main():
     cm.file_cross_match(p_agn_sz, p_hsc_vw, p_agn_p, '_hsc1', hsc_csize, 
                         right_metric="imag_kron", algorithm = "lowest",
                         left_ran = "RA",left_decn = "DEC")
-    
+   
     report("Cross matching WISE to SDSS")
     cm.file_cross_match(p_agn_p, p_sdss, p_agn_f, "_sdss1", sdss_csize,
-                                 algorithm = "closest", left_ran = "RA",
-                                 left_decn = "DEC")
+                                 algorithm = "closest",
+                                 left_ran = "RA", left_decn = "DEC",
+                                 right_ran = "RA", right_decn = "DEC")
         
     report("Cross matching HSC to Spec-Z")
     cm.file_cross_match(p_specz, p_hsc_vw, p_hsc_f, '_sz', agn_csize,
@@ -351,7 +352,7 @@ def add_wise_mask_column(unprocessed, masked, ra_name='ra', dec_name='dec',
         print("╣")
         print("╠", end="")
     
-    #1. Get the unprocessed csv in chunks
+    #1. Get the unprocessed hdf in chunks
     frame = pd.read_hdf(unprocessed, chunksize=chunksize, key="primary")
     if chunksize == None: 
         frame = [frame]
