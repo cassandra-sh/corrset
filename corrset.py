@@ -74,11 +74,15 @@ for i in range(n_pix):
             pairs.append(pair_to_add)
     
 
+
+CORRELATE_AGAIN = True
+QUALIFY_AGAIN = True
+
 def main():
     """
     Handles everything to run the standard correlation we're interested in
     """
-    if False:
+    if QUALIFY_AGAIN:
         qualifier.main()
 
     
@@ -101,9 +105,11 @@ def main():
                       d1names = ['ra', 'dec', 'pix', 'redshift'],
                       d2names = ['ra', 'dec', 'pix', 'redshift'],
                       rnames  = ['ra', 'dec', 'pix'],
-                      corr_now = False)
+                      corr_now = CORRELATE_AGAIN)
     
-    report("Finished generating correlation. Now reading results")
+    corrset.prep_correlation(save=False)
+    
+    report("Finished generating/loading correlation. Now reading results")
     
     corrs, errs = corrset.read_correlation()
     a_bin_middles = (angular_bins[1:] + angular_bins[:-1]) / 2
@@ -184,6 +190,7 @@ class Corrset:
         bins. 
         """
         
+        
         #Pull out the dicts which contain the CountMatrix objects for each pair
         d1d2 = self.matrices['d1d2']
         d1r  = self.matrices['d1r']
@@ -191,24 +198,25 @@ class Corrset:
         rr   = self.matrices['rr']
         
         #Prepare the list to save the lists of matrices in
-        part = [[], [], [], []] #lists for d1d2, d1r, d2r, rr for each z bin
         by_zbin = []
         for i in range(len(self.zbins)-1):
-            by_zbin.append(part)
+            by_zbin.append([[], [], [], []])
         
         #Go through each dict and pull out the relevant bins per list.
         #What we want: shape of by_zbin = (len(zbins), 4, len(abins))
         matrix_dicts = [d1d2, d1r, d2r]
-        for i in range(len(self.zbins)-1):
-            for j in range(len(matrix_dicts)):
+        for j in range(len(matrix_dicts)):
+            for i in range(len(self.zbins)-1):
+                a_bin = []
                 for k in range(len(self.abins)-1):
                     matrix = matrix_dicts[j]['bin_' + str(i) + str(k)].mat
-                    by_zbin[i][j].append(matrix)
+                    a_bin.append(matrix)
+                by_zbin[i][j] = a_bin
         for k in range(len(self.abins)-1):
-            matrix = rr['bin_' + str(i) + str(k)].mat
-            for i in range(len(part)): 
+            matrix = rr['bin_' + str(0) + str(k)].mat
+            for i in range(len(self.zbins)-1): 
                 by_zbin[i][3].append(matrix)
-        
+                
         #Now that we have the matrices, it's time to jackknife for each bin.
         results_by_bin = []
         errors_by_bin = []
@@ -219,30 +227,33 @@ class Corrset:
         
         return results_by_bin, errors_by_bin
     
-    def jackknife(self, matrix_list, jackknife_pix):
+    def jackknife(self, matrix_group_list, jackknife_pix):
         """
         Take the matrices and the jackknife pix and compute the correlations. 
         """
-        results = []
+        correlation_results = []
         for pix in jackknife_pix:
-            to_correlate = []
-            for matrix in matrix_list:
-                to_correlate.append(self.drop_rowcol(matrix,pix))
-            results.append(self.correlate(to_correlate))
-        results = np.array(results)
-        mean = np.mean(results, axis=0)
-        stdev = np.stdev(results, axis=0)
-        return mean,stdev
+            jackknifed_group = [[],[],[],[]]
+            for d in range(len(jackknifed_group)):
+                for a in range(len(self.abins)-1):
+                    mat_to_use = np.matrix(matrix_group_list[d][a])
+                    jackknifed = self.drop_rowcol(mat_to_use, pix)
+                    jackknifed_group[d].append(jackknifed)
+            result = self.correlate(jackknifed_group)
+            correlation_results.append(result)
+        mean = np.mean(np.array(correlation_results), axis=0)
+        stdev = np.std(np.array(correlation_results), axis=0)
+        return mean, stdev
         
         
     
-    def drop_rowcol(matrix, index):
+    def drop_rowcol(self, matrix, index):
         return np.delete(np.delete(matrix, index, axis=0), index, axis=1)
     
-    def correlate(matrix_list):
+    def correlate(self, matrix_list):
         """
         @params
-            matrix_list shape = (4, len(abins))
+            matrix_list shape = (4, len(abins), n_pix, n_pix)
         @returns
             The landy-szalay correlation signal associated with this matrix.
         """
@@ -296,14 +307,15 @@ class Corrset:
         """
         Does the pair counting in a smart parallelized way
         """
-        try:
-            os.remove(self.filepref+name)
-        except FileNotFoundError:
-            pass
-        mats= term(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
-                   filename=(self.filepref+name), zbins=self.zbins,
-                   abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                   d1=d1, d2=d2)
+        if save == True:
+            try:
+                os.remove(self.filepref+name)
+            except FileNotFoundError:
+                pass
+        mats= correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
+                            filename=(self.filepref+name), zbins=self.zbins,
+                            abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                            d1=d1, d2=d2)
         self.matrices[name] = mats
 
   
@@ -356,7 +368,7 @@ class CountMatrix:
         self.mat = np.zeros((self.n, self.n), dtype=float)
 
       
-def term( **kwargs):
+def correlate_dat( **kwargs):
     """
     Saves a term
     
@@ -429,14 +441,46 @@ def term( **kwargs):
         else:
             ra2, dec2, pix2, z2 = get_cols(d2, colnames2[:4])
         
-        report("term(): Sending to job handler job with filename "+str(filename)+"\n"+
-                  "And len(ra1)="+str(len(ra1))+" and len(ra2)="+str(len(ra2)))
+        report("correlate_dat(): Sending to job handler job with filename "+
+               str(filename)+"\n"+"And len(ra1)="+str(len(ra1))+
+               " and len(ra2)="+str(len(ra2)))
         
-        #Run the correlation
-        job_handler(ra1, dec1, z1, pix1, no_z1,
-                    ra2, dec2, z2, pix2, no_z2,
-                    abins, zbins, filename)
-
+        #Prepare the bins
+        global n_cores
+        zbins1 = zbins
+        zbins2 = zbins
+        if no_z1 == True:
+            zbins1 = []
+        if no_z2 == True:
+            zbins2 = []
+        cart_bins = angular_dist_to_euclidean_dist(angular_bins)
+        
+        #Divide up the ra and dec by z bin and pixel
+        report("correlate_dat(): Sorting groups by z bin and pixel")
+        group1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
+        group2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
+        
+        #Generate the arguments to the processes
+        n = 0
+        
+        report("correlate_dat(): Run the jobs.")
+        #Be cognizant of whether or not redshift is being used in a given analysis
+        if no_z1 == True and no_z2 == True:
+            correlate_zbin(filename, group1[0], group2[0], n, cart_bins)
+            n = n + 1
+        elif no_z1 == True and no_z2 == False:
+            for zbin in group2:
+                correlate_zbin(filename, group1[0], zbin, n, cart_bins)
+                n = n + 1
+        elif no_z1 == False and no_z2 == True:
+            for zbin in group1:
+                correlate_zbin(filename, zbin, group2[0], n, cart_bins)
+                n = n + 1
+        else:
+            for i in range(0, len(group1)):
+                correlate_zbin(filename, group1[i], group2[i], n, cart_bins)
+                n = n + 1
+    
     if load == True:
         #Load relevant metadata
         zbins = pd.read_hdf(filename, key='zbins')[0].tolist()
@@ -458,74 +502,10 @@ def term( **kwargs):
                 mname = ("bin_" + str(z) + str(a))
                 matrices[mname] = CountMatrix(filename=filename, tabname=mname, load=True)
         return matrices
-
-
-
-def job_handler(ra1, dec1, z1, pix1, no_z1, 
-                ra2, dec2, z2, pix2, no_z2, 
-                angular_bins, zbins, filename):
-    """
-    Function which assigns jobs to a multiprocessing queue
-    
-    @params
-        ra1, dec1, ra2, dec2 - coordinate pairs for both sides of pair count
-        z1, z2               - redshifts of both sides
-        pix1, pix2           - healpix pixel numbers for both sides
-        no_z1, no_z2         - whether or not to use redshift in the analysis of
-                               each side of the pair count.
-        angular_bins         - angular bins to use in the analysis
-        zbins                - redshift bins to use in the analysis
-        filename             - the hdf file to save the results in
-    
-    """
-    report("job_handler(): Down to job_handler and multiprocessing")
-    
-    #Prepare the bins
-    global n_cores
-    zbins1 = zbins
-    zbins2 = zbins
-    if no_z1 == True:
-        zbins1 = []
-    if no_z2 == True:
-        zbins2 = []
-    cart_bins = angular_dist_to_euclidean_dist(angular_bins)
-    
-    #Divide up the ra and dec by z bin and pixel
-    report("job_handler(): Sorting groups by z bin and pixel")
-    group1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
-    group2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
-    
-    #Generate the arguments to the processes
-    n = 0
-    
-    report("job_handler(): Run the jobs.")
-    #Be cognizant of whether or not redshift is being used in a given analysis
-    if no_z1 == True and no_z2 == True:
-        job(filename, group1[0], group2[0], n, cart_bins)
-        n = n + 1
-    elif no_z1 == True and no_z2 == False:
-        for zbin in group2:
-            job(filename, group1[0], zbin, n, cart_bins)
-            n = n + 1
-    elif no_z1 == False and no_z2 == True:
-        for zbin in group1:
-            job(filename, zbin, group2[0], n, cart_bins)
-            n = n + 1
-    else:
-        for i in range(0, len(group1)):
-            job(filename, group1[i], group2[i], n, cart_bins)
-            n = n + 1
     
 
-def job(file, coords1, coords2, z, bins, nside=nside_default):
-    """
-    End point process, which computes a correlation set and saves it.
-    
-    Designed to be fed into multiprocessing.Process(), though on later account
-    it was determined that a process inside this method was more suited for
-    multiprocessing, so now it is simply called by job_handler, as if this code
-    was not opaque and confusing enough...
-    
+def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
+    """    
     @params
     
         file         - the name of the file where the corrset will be saved
@@ -559,7 +539,7 @@ def job(file, coords1, coords2, z, bins, nside=nside_default):
             tree_array.append(KDTree(np.asarray(ra_dec_to_xyz(ra, dec),
                                             order='F').T))
             n_trees = n_trees + 1
-    report("job(): Just finished growing " + str(n_trees) +
+    report("correlate_zbin(): Just finished growing " + str(n_trees) +
            " trees corresponding to coords2 shape = " + str(np.shape(coords2)))
     
     #2. Make empty count matrices to save results to.
@@ -582,7 +562,7 @@ def job(file, coords1, coords2, z, bins, nside=nside_default):
         else:
             args = (coords1, coords1, pair, tree_array, bins,
                     count_matrix_array, turn, fin, save_queue)
-            processes.append(mp.Process(target=subjob, args=args))
+            processes.append(mp.Process(target=correlate_pixpair, args=args))
             turn = turn + 1
                 
     
@@ -594,14 +574,14 @@ def job(file, coords1, coords2, z, bins, nside=nside_default):
     
     #While we have a large number of processes (< n cores) to go, wait for each
     #one to report finished before adding another to the pile
-    report("job(): Starting the " + str(turn) + " job(s)")
+    report("correlate_zbin(): Starting the " + str(turn) + " job(s)")
     global n_cores
     while n_processes_started < turn:
         if n_processes_going < n_cores:
             processes[n_processes_started].start()
             n_processes_started = n_processes_started + 1
             
-            report("job(): Jobs going: "+str(n_processes_going)+"\n"+
+            report("correlate_zbin(): Jobs going: "+str(n_processes_going)+"\n"+
                    "Jobs finished: "+str(n_processes_finished)+"\n"+
                    "Jobs started: "+str(n_processes_started))
         else:
@@ -614,13 +594,13 @@ def job(file, coords1, coords2, z, bins, nside=nside_default):
         process.join()
         n_processes_finished = fin.value
         
-        report("job(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
+        report("correlate_zbin(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
                "Jobs finished: "+str(n_processes_finished)+"\n"+
                "Jobs started: "+str(n_processes_started))
     
 
-def subjob(coords1, coords2, pair, tree_array, bins,
-           count_matrix_array, turn, fin, savequeue):
+def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
+                      count_matrix_array, turn, fin, savequeue):
     """
     subjob() runs the correlations, waits for its turn to save, and saves. 
     
