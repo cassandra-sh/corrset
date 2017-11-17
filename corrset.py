@@ -8,10 +8,12 @@ Where the magic happens
 @author: csh4
 """
 
-import sys
 import gc
+import os
+import sys
 import time
 import psutil
+import qualifier
 import numpy                   as np
 import pandas                  as pd
 import healpy                  as hp
@@ -19,7 +21,6 @@ import multiprocessing         as mp
 import matplotlib.pyplot       as plt
 import astroML.correlation     as cr
 from   scipy               import spatial
-from   .utils              import check_random_state
 from   corruscant          import twopoint
 from   corruscant          import clustering
 from   sklearn.neighbors   import BallTree
@@ -56,11 +57,11 @@ def report(report_string):
 pairs = []
 n_pix = hp.nside2npix(nside_default)
 #First do the self-self combos
-for i in range(len(n_pix)):
+for i in range(n_pix):
     pairs.append([i, i])
 #Now do the self-other combos
-for i in range(len(n_pix)):
-    to_add = hp.get_all_neighbors(nside_default, i)
+for i in range(n_pix):
+    to_add = hp.pixelfunc.get_all_neighbours(nside_default, i)
     for j in range(len(to_add)):
         pair_to_add = []
         if to_add[j] > i:
@@ -76,7 +77,11 @@ for i in range(len(n_pix)):
 def main():
     """
     Handles everything to run the standard correlation we're interested in
-    """    
+    """
+    if True:
+        qualifier.main()
+
+    
     report("Welcome to corrset.main(). Running a correlation on the default catalogs.")
     
     dir_path = "/scr/depot0/csh4/"
@@ -100,7 +105,7 @@ def main():
     
     report("Finished generating correlation. Now reading results")
     
-    corrs = corrset.read_correlation()
+    corrs, errs = corrset.read_correlation()
     a_bin_middles = (angular_bins[1:] + angular_bins[:-1]) / 2
     
     report("Finished reading results. Plotting")
@@ -109,7 +114,7 @@ def main():
     for i in range(0, len(redshift_bins)-1):
         fig.add_subplot(int("13"+ str(i+1)))
         plt.title("z bin " + str(redshift_bins[i] + ", " + str(redshift_bins[i+1])))
-        plt.plot(a_bin_middles, corrs[i])
+        plt.errorbar(a_bin_middles, corrs[i], yerr=errs[i])
         plt.loglog()
     plt.show()
     
@@ -212,7 +217,7 @@ class Corrset:
             results_by_bin.append(results)
             errors_by_bin.append(errors)
         
-        return results_by_bin
+        return results_by_bin, errors_by_bin
     
     def jackknife(self, matrix_list, jackknife_pix):
         """
@@ -291,9 +296,14 @@ class Corrset:
         """
         Does the pair counting in a smart parallelized way
         """
+        try:
+            os.remove(self.filepref+name)
+        except FileNotFoundError:
+            pass
         mats= term(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
                    filename=(self.filepref+name), zbins=self.zbins,
-                   abins=self.abins, colnames1 = colnames1, colnames2=colnames2)
+                   abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                   d1=d1, d2=d2)
         self.matrices[name] = mats
 
         
@@ -327,7 +337,6 @@ def term( **kwargs):
         A list of CountMatrix objects IF load == True
         
     """
-    
     load = kwargs.get('load',False)
     save = kwargs.get('save',True)
     no_z1 = kwargs.get('no_z1', False)
@@ -340,6 +349,7 @@ def term( **kwargs):
     if save == True:
         #Get all the parameters to run the correlation on
         d1, d2 = kwargs.get('d1'), kwargs.get('d2')
+        
         colnames1, colnames2 = kwargs.get('colnames1'), kwargs.get('colnames2')
         z1, z2 = kwargs.get('z1'), kwargs.get('z2')
         
@@ -370,6 +380,9 @@ def term( **kwargs):
         else:
             ra2, dec2, pix2, z2 = get_cols(d2, colnames2[:4])
         
+        report("term(): Sending to job handler job with filename "+str(filename)+"\n"+
+                  "And len(ra1)="+str(len(ra1))+" and len(ra2)="+str(len(ra2)))
+        
         #Run the correlation
         job_handler(ra1, dec1, z1, pix1, no_z1,
                     ra2, dec2, z2, pix2, no_z2,
@@ -383,8 +396,8 @@ def term( **kwargs):
         no_z1 = meta['no_z1'][0]
         no_z2 = meta['no_z2'][0]
         
-        a_range = range(len(abins))
-        z_range = range(len(zbins))
+        a_range = range(len(abins)-1)
+        z_range = range(len(zbins)-1)
         if no_z1 and no_z2:
             z_range = [0]
         
@@ -423,10 +436,10 @@ class CountMatrix:
         self.file = filename
         self.n = n
         self.mat = np.zeros((n, n), dtype=float)
-        if load:
-            self.load()
         if save:
             self.save()
+        if load:
+            self.load()
             
     def load(self):
         #Load the hdf matrix from the filename and hdf table tabname
@@ -464,6 +477,8 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
         filename             - the hdf file to save the results in
     
     """
+    report("Down to job_handler and multiprocessing")
+    
     #Prepare the bins
     global n_cores
     zbins1 = zbins
@@ -475,6 +490,7 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
     cart_bins = angular_dist_to_euclidean_dist(angular_bins)
     
     #Divide up the ra and dec by z bin and pixel
+    report("job_handler(): Sorting groups by z bin and pixel")
     group1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
     group2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
     
@@ -483,6 +499,7 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
     turn = mp.Value('i', 0)
     n = 0
     
+    report("job_handler(): Constructing job input(s)")
     #Be cognizant of whether or not redshift is being used in a given analysis
     if no_z1 == True and no_z2 == True:
         jobin.append([filename, group1[0], group2[0], n, cart_bins, turn])
@@ -492,36 +509,45 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
             jobin.append([filename, group1[0], zbin, n, cart_bins, turn])
             n = n + 1
     elif no_z1 == False and no_z2 == True:
-        for zbin in group2:
+        for zbin in group1:
             jobin.append([filename, zbin, group2[0], n, cart_bins, turn])
             n = n + 1
     else:
         for i in range(0, len(group1)):
             jobin.append([filename, group1[i], group2[i], n, cart_bins, turn])
             n = n + 1
-    
     #Make the processes
     processes = [mp.Process(target=job, args=j) for j in jobin]
+    
     
     #Start the process, one per core. 
     n_processes_started = 0
     n_processes_finished = turn.value
     n_processes_going =  n_processes_started - n_processes_finished
     
+    report("job_handler(): Starting the " + str(n) + " job(s)")
     #While we have a large number of processes (< n cores) to go, wait for each
     #one to report finished before adding another to the pile
-    while n_processes_finished+n_cores < n:
+    while n_processes_started < n:
         if n_processes_going < n_cores:
             processes[n_processes_started].start()
             n_processes_started = n_processes_started + 1
+            
+            report("job_handler(): Jobs going: "+str(n_processes_going)+"\n"+
+                   "Jobs finished: "+str(n_processes_finished)+"\n"+
+                   "Jobs started: "+str(n_processes_started))
         else:
-            time.sleep(1)
+            time.sleep(5)
         n_processes_finished = turn.value
         n_processes_going =  n_processes_started - n_processes_finished
     
     #Once we have few jobs to go, wait for them to finish up and get out. 
     for process in processes:
         process.join()
+        n_processes_finished = turn.value
+        report("job_handler(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
+               "Jobs finished: "+str(n_processes_finished)+"\n"+
+               "Jobs started: "+str(n_processes_started))
     
 
 def job(file, coords1, coords2, z, bins, turn, nside=nside_default):
@@ -550,41 +576,69 @@ def job(file, coords1, coords2, z, bins, turn, nside=nside_default):
                        bin. It is also what turn the job will wait for before 
                        saving. 
     """
-    n_pix = hp.nside2npix(nside)
-    to_save = np.ndarray((len(bins), len(n_pix), len(n_pix)), dtype=int)
-    to_save.fill(0)
-    global pairs
     #1. Make the KDTrees that will be used for computing the pair counts
     tree_array = []
+    n_trees = 0
     for i in range(len(coords2)):
-        ra, dec = coords2[i][0], coords2[i][1]
-        tree_array.append(KDTree(np.asarray(ra_dec_to_xyz(ra, dec),
+        ra, dec = np.array(coords2[i][0]), np.array(coords2[i][1])
+        if len(ra) == 0: #Empty Pixel
+            tree_array.append(None)
+        else:
+            tree_array.append(KDTree(np.asarray(ra_dec_to_xyz(ra, dec),
                                             order='F').T))
+            n_trees = n_trees + 1
+    report("job(): Just finished growing " + str(n_trees) +
+           " trees corresponding to coords2 shape = " + str(np.shape(coords2)))
     #2. Make empty count matrices
     count_matrix_array = []
     for a in range(len(bins)-1):
-        mat = CountMatrix(filename=file, tabname=("bin_" + str(z) + str(a)))
+        mat = CountMatrix(filename=file, tabname=("bin_" + str(z) + str(a)), load=False)
         count_matrix_array.append(mat)
     #3. Run correlations
+    global pairs
+    empty_pair = 0
+    good_pair = 0
     for pair in pairs:
-        #i.   Run the pair counting
-        result = two_point_angular_corr_part(coords1[pairs[0]][0],
-                                             coords1[pairs[0]][1],
-                                             tree_array[pair[1]], bins)
-        
-        #ii.  Normalize by number of coordinate pairs
-        result = np.diff(result)/(len(coords1[pairs[0]][0])*len(coords2[pairs[1]][0]))
-        
-        #iii. Save each angular bin to its appropriate count matrix
-        for i in range(len(result)):
-            count_matrix_array[i][pair[0]][pair[1]] = result[i]
+        result = []
+        #0. Check if either pixel is empty. If it is, no need to record counts  :D
+        if len(coords1[pair[0]][0]) == 0 or len(coords2[pair[1]][0]) == 0:
+            empty_pair = empty_pair + 1
+        else:
+            print("pair_info")
+            print(np.shape(coords1[pair[0]][0]))
+            print(np.shape(coords2[pair[1]][0]))
+            print(tree_array[pair[1]])
+            print(pair)
+            print("")
+            #i.   Run the pair counting
+            #
+            #
+            #   So, this part below should be the multiprocessed part. Admittedly,
+            # that might still be tricky because we would have to still manage saving
+            # with the count matrix. A queue would be needed for this process, lifo style
+            #
+            #
+            result = two_point_angular_corr_part(coords1[pair[0]][0],
+                                                 coords1[pair[0]][1],
+                                                 tree_array[pair[1]], bins)
+            #ii.  Normalize by number of coordinate pairs
+            result = np.diff(result)/(len(coords1[pair[0]][0])*len(coords2[pair[1]][0]))
+            #iii. Save each angular bin to its appropriate count matrix
+            for i in range(len(result)):
+                count_matrix_array[i].mat[pair[0],pair[1]] = result[i]
+            good_pair = good_pair + 1
     #4. Save the result, but only if it is our turn
     while turn.value != z:
         time.sleep(1)
-        
+    
+    report("job(): Pair counting done: " + str(good_pair) +
+           " pairs with pairs and " + str(empty_pair) + " pairs without")
+    
+    print(count_matrix_array)
     for countmatrix in count_matrix_array:
+        report("job(): Saving " + file + " with tabname = " + countmatrix.name)
         countmatrix.save()
-    turn.value = n + 1
+    turn.value = z + 1
             
     
     
@@ -623,22 +677,54 @@ def by_bin(ra, dec, z, pix, zbins=redshift_bins, nside=nside_default):
         in each bin, which will vary from 0 for none in a bin to len(ra) for all
         in one bin.
     """
+    n_pix = hp.nside2npix(nside)
+    
+    if len(zbins) <= 1: #Just sort pixels if zbins is length 0
+        to_return = [[]]
+        for p in range(n_pix):
+            inpix = np.where(pix == p)[0]
+            to_return[0].append([[ra[j] for j in inpix],
+                                [dec[j] for j in inpix]])
+        return to_return
+        
+        
     #Step 1: Construct the list to return.
     groups = []
-    n_pix = hp.nside2npix(nside)
     for i in range(len(zbins)-1): #Z bin indexing
         groups.append([])
-        for j in range(len(n_pix)): #Healpix indexing
-            groups[i].append([np.array([], dtype=float),  #The RA list
-                              np.array([], dtype=float)]) #The DEC list 
+        for j in range(n_pix): #Healpix indexing
+            groups[i].append([[],  #The RA list
+                              []]) #The DEC list
+    
     #Step 2: Ascertain where in the list to return the RA and DEC should go
-    indices = np.zeros(len(ra), dtype=int)
-    if zbins != []:
-        indices = to_zbins(z, zbins)
+    indices = to_zbins(z, zbins)
+    
+    report("by_bin(): Indices gotten with shape "+str(np.shape(indices))+"\n"+
+           "Min: "+str(min(indices))+" and Max: "+str(max(indices)))
     #Step 3: Put the RA and DEC in the appropriate place in the list
-    for i in range(len(ra)):
-        np.append(groups[indices[i]][pix[i]][0],  ra[i])
-        np.append(groups[indices[i]][pix[i]][1], dec[i])
+    
+    #This part is really slow for some reason so go ahead and try to improve it
+    
+    #Attempt 2: tried to break the process up into two list construction parts
+    #Doubled speed, but it still takes a few minutes for the test sample :\
+    for z in range(len(zbins)-1):
+        inbin = np.where(indices == z)[0]
+        specific_z_binned_ra  = [ra[j]  for j in inbin]
+        specific_z_binned_dec = [dec[j] for j in inbin]
+        specific_z_binned_pix = np.array([pix[j] for j in inbin], dtype=int)
+
+        for p in range(n_pix):
+            inpix = np.where(specific_z_binned_pix == p)[0]
+            groups[z][p][0] =  [specific_z_binned_ra[j] for j in inpix]
+            groups[z][p][1] = [specific_z_binned_dec[j] for j in inpix]
+     
+    #Cast as numpy float arrays
+    for i in range(len(zbins)-1): #Z bin indexing
+        for j in range(n_pix): #Healpix indexing
+            groups[i][j][0] = np.array(groups[i][j][0], dtype=float)
+            groups[i][j][1] = np.array(groups[i][j][1], dtype=float)
+    
+    report("by_bin(): Done sorting into bins. Returning")
     return groups
         
 def to_zbins(zlist, zbins=redshift_bins):
@@ -655,13 +741,13 @@ def to_zbins(zlist, zbins=redshift_bins):
         indices from each z in zlist to the appropriate z bin
     """
     indices = np.zeros(np.shape(zlist), dtype=int)
-    for i in range(1, len(zbins)):
-        in_bin = np.logical_and(np.greater(zlist, zbins[i-1]),
-                                   np.less(zlist, zbins[i]))
+    for i in range(len(zbins)-1):
+        in_bin = np.logical_and(np.greater(zlist, zbins[i]),
+                                   np.less(zlist, zbins[i+1]))
         for j in np.where(in_bin)[0]: indices[j] = i
     return indices
 
-def get_cols(file, cols, chunksize=1000000):
+def get_cols(file, cols, chunksize=None):
     """
     Helper function gets all the columns you want from a given HDF file path.
     Returns a list of pd.Series objects.
@@ -673,6 +759,8 @@ def get_cols(file, cols, chunksize=1000000):
     """
     coldata = []
     chunks = pd.read_hdf(file, key="primary", chunksize=chunksize)
+    if chunksize == None:
+        chunks = [chunks]
     for chunk in chunks:
         if coldata == []:
             for colname in cols:
