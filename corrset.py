@@ -78,7 +78,7 @@ def main():
     """
     Handles everything to run the standard correlation we're interested in
     """
-    if True:
+    if False:
         qualifier.main()
 
     
@@ -101,7 +101,7 @@ def main():
                       d1names = ['ra', 'dec', 'pix', 'redshift'],
                       d2names = ['ra', 'dec', 'pix', 'redshift'],
                       rnames  = ['ra', 'dec', 'pix'],
-                      corr_now = True)
+                      corr_now = False)
     
     report("Finished generating correlation. Now reading results")
     
@@ -201,10 +201,10 @@ class Corrset:
         matrix_dicts = [d1d2, d1r, d2r]
         for i in range(len(self.zbins)-1):
             for j in range(len(matrix_dicts)):
-                for k in range(len(matrix_dicts[j])):
+                for k in range(len(self.abins)-1):
                     matrix = matrix_dicts[j]['bin_' + str(i) + str(k)].mat
                     by_zbin[i][j].append(matrix)
-        for k in range(len(rr)):
+        for k in range(len(self.abins)-1):
             matrix = rr['bin_' + str(i) + str(k)].mat
             for i in range(len(part)): 
                 by_zbin[i][3].append(matrix)
@@ -306,7 +306,56 @@ class Corrset:
                    d1=d1, d2=d2)
         self.matrices[name] = mats
 
+  
+class CountMatrix:
+    """
+    Handler for the numpy matrix that holds the pair counting data.
+    
+    We use a symmetric 2d square matrix of size n*n, where n = the number of
+    healpix pixels. The values on the diagonal are for counting the pairs
+    within a pixel. Boundary pairs are placed above the diagonal. 
+    
+    dev note: we may or may not add counts above and below, but add the below
+              to above afterwards to maintain the above property. Whatever is
+              faster
+    
+    This class will have the following functionality:
+        -save or load this matrix from an hdf. 
+            This includes managing its data in the bin_info table
+        -balance the matrix so above the diagonal contains all the pair info.
+        -read the pair info without a given pixel (jackknife resampling)
+        -construct the matrix from input data
+    """
+    def __init__(self, n=hp.nside2npix(nside_default), filename="", tabname="",
+                 load=False, save=False):
+        #Initialize the empty matrix
+        self.name = tabname
+        self.file = filename
+        self.n = n
+        self.mat = np.zeros((n, n), dtype=float)
+        if save:
+            self.save()
+        if load:
+            self.load()
+            
+    def load(self):
+        #Load the hdf matrix from the filename and hdf table tabname
+        df = pd.read_hdf(self.file, key=self.name)
+        self.mat = df.as_matrix().astype(float)
+    
+    def save(self):
+        #Save the hdf matrix to the filename and hdf table tabname
+        df = pd.DataFrame(data=self.mat)
+        df.to_hdf(self.file, key=self.name, format="table")
         
+    def balance(self):
+        #for each value below the diagonal, add to tranverse and set to zero
+        self.mat = np.triu(self.mat) + np.tril(self.mat, k=-1).T
+    
+    def clear(self):
+        self.mat = np.zeros((self.n, self.n), dtype=float)
+
+      
 def term( **kwargs):
     """
     Saves a term
@@ -410,54 +459,6 @@ def term( **kwargs):
                 matrices[mname] = CountMatrix(filename=filename, tabname=mname, load=True)
         return matrices
 
-class CountMatrix:
-    """
-    Handler for the numpy matrix that holds the pair counting data.
-    
-    We use a symmetric 2d square matrix of size n*n, where n = the number of
-    healpix pixels. The values on the diagonal are for counting the pairs
-    within a pixel. Boundary pairs are placed above the diagonal. 
-    
-    dev note: we may or may not add counts above and below, but add the below
-              to above afterwards to maintain the above property. Whatever is
-              faster
-    
-    This class will have the following functionality:
-        -save or load this matrix from an hdf. 
-            This includes managing its data in the bin_info table
-        -balance the matrix so above the diagonal contains all the pair info.
-        -read the pair info without a given pixel (jackknife resampling)
-        -construct the matrix from input data
-    """
-    def __init__(self, n=hp.nside2npix(nside_default), filename="", tabname="",
-                 load=False, save=False):
-        #Initialize the empty matrix
-        self.name = tabname
-        self.file = filename
-        self.n = n
-        self.mat = np.zeros((n, n), dtype=float)
-        if save:
-            self.save()
-        if load:
-            self.load()
-            
-    def load(self):
-        #Load the hdf matrix from the filename and hdf table tabname
-        df = pd.read_hdf(self.file, key=self.name)
-        self.mat = df.as_matrix().astype(float)
-    
-    def save(self):
-        #Save the hdf matrix to the filename and hdf table tabname
-        df = pd.DataFrame(data=self.mat)
-        df.to_hdf(self.file, key=self.name, format="table")
-        
-    def balance(self):
-        #for each value below the diagonal, add to tranverse and set to zero
-        self.mat = np.triu(self.mat) + np.tril(self.mat, k=-1).T
-    
-    def clear(self):
-        self.mat = np.zeros((self.n, self.n), dtype=float)
-
 
 
 def job_handler(ra1, dec1, z1, pix1, no_z1, 
@@ -477,7 +478,7 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
         filename             - the hdf file to save the results in
     
     """
-    report("Down to job_handler and multiprocessing")
+    report("job_handler(): Down to job_handler and multiprocessing")
     
     #Prepare the bins
     global n_cores
@@ -495,66 +496,35 @@ def job_handler(ra1, dec1, z1, pix1, no_z1,
     group2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
     
     #Generate the arguments to the processes
-    jobin = []
-    turn = mp.Value('i', 0)
     n = 0
     
-    report("job_handler(): Constructing job input(s)")
+    report("job_handler(): Run the jobs.")
     #Be cognizant of whether or not redshift is being used in a given analysis
     if no_z1 == True and no_z2 == True:
-        jobin.append([filename, group1[0], group2[0], n, cart_bins, turn])
+        job(filename, group1[0], group2[0], n, cart_bins)
         n = n + 1
     elif no_z1 == True and no_z2 == False:
         for zbin in group2:
-            jobin.append([filename, group1[0], zbin, n, cart_bins, turn])
+            job(filename, group1[0], zbin, n, cart_bins)
             n = n + 1
     elif no_z1 == False and no_z2 == True:
         for zbin in group1:
-            jobin.append([filename, zbin, group2[0], n, cart_bins, turn])
+            job(filename, zbin, group2[0], n, cart_bins)
             n = n + 1
     else:
         for i in range(0, len(group1)):
-            jobin.append([filename, group1[i], group2[i], n, cart_bins, turn])
+            job(filename, group1[i], group2[i], n, cart_bins)
             n = n + 1
-    #Make the processes
-    processes = [mp.Process(target=job, args=j) for j in jobin]
-    
-    
-    #Start the process, one per core. 
-    n_processes_started = 0
-    n_processes_finished = turn.value
-    n_processes_going =  n_processes_started - n_processes_finished
-    
-    report("job_handler(): Starting the " + str(n) + " job(s)")
-    #While we have a large number of processes (< n cores) to go, wait for each
-    #one to report finished before adding another to the pile
-    while n_processes_started < n:
-        if n_processes_going < n_cores:
-            processes[n_processes_started].start()
-            n_processes_started = n_processes_started + 1
-            
-            report("job_handler(): Jobs going: "+str(n_processes_going)+"\n"+
-                   "Jobs finished: "+str(n_processes_finished)+"\n"+
-                   "Jobs started: "+str(n_processes_started))
-        else:
-            time.sleep(5)
-        n_processes_finished = turn.value
-        n_processes_going =  n_processes_started - n_processes_finished
-    
-    #Once we have few jobs to go, wait for them to finish up and get out. 
-    for process in processes:
-        process.join()
-        n_processes_finished = turn.value
-        report("job_handler(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
-               "Jobs finished: "+str(n_processes_finished)+"\n"+
-               "Jobs started: "+str(n_processes_started))
     
 
-def job(file, coords1, coords2, z, bins, turn, nside=nside_default):
+def job(file, coords1, coords2, z, bins, nside=nside_default):
     """
     End point process, which computes a correlation set and saves it.
     
-    Designed to be fed into multiprocessing.Process()
+    Designed to be fed into multiprocessing.Process(), though on later account
+    it was determined that a process inside this method was more suited for
+    multiprocessing, so now it is simply called by job_handler, as if this code
+    was not opaque and confusing enough...
     
     @params
     
@@ -577,6 +547,8 @@ def job(file, coords1, coords2, z, bins, turn, nside=nside_default):
                        saving. 
     """
     #1. Make the KDTrees that will be used for computing the pair counts
+    #   Ensure that KDTrees are not made for empty pixels. 
+    #   Give a report at the end.
     tree_array = []
     n_trees = 0
     for i in range(len(coords2)):
@@ -589,56 +561,98 @@ def job(file, coords1, coords2, z, bins, turn, nside=nside_default):
             n_trees = n_trees + 1
     report("job(): Just finished growing " + str(n_trees) +
            " trees corresponding to coords2 shape = " + str(np.shape(coords2)))
-    #2. Make empty count matrices
+    
+    #2. Make empty count matrices to save results to.
     count_matrix_array = []
     for a in range(len(bins)-1):
-        mat = CountMatrix(filename=file, tabname=("bin_" + str(z) + str(a)), load=False)
+        mat = CountMatrix(filename=file, tabname=("bin_" + str(z) + str(a)),
+                          load=False, save=True)
         count_matrix_array.append(mat)
-    #3. Run correlations
+        
+    #3. Generate multiprocessing Processes for running the correlations. 
+    #   But if either pixel in each pixel-pixel pair is empty, don't add a job.
     global pairs
-    empty_pair = 0
-    good_pair = 0
+    turn = 0
+    fin = mp.Value('i', 0)
+    save_queue = mp.Manager().list([])
+    processes = []
     for pair in pairs:
-        result = []
-        #0. Check if either pixel is empty. If it is, no need to record counts  :D
         if len(coords1[pair[0]][0]) == 0 or len(coords2[pair[1]][0]) == 0:
-            empty_pair = empty_pair + 1
+            pass
         else:
-            print("pair_info")
-            print(np.shape(coords1[pair[0]][0]))
-            print(np.shape(coords2[pair[1]][0]))
-            print(tree_array[pair[1]])
-            print(pair)
-            print("")
-            #i.   Run the pair counting
-            #
-            #
-            #   So, this part below should be the multiprocessed part. Admittedly,
-            # that might still be tricky because we would have to still manage saving
-            # with the count matrix. A queue would be needed for this process, lifo style
-            #
-            #
-            result = two_point_angular_corr_part(coords1[pair[0]][0],
+            args = (coords1, coords1, pair, tree_array, bins,
+                    count_matrix_array, turn, fin, save_queue)
+            processes.append(mp.Process(target=subjob, args=args))
+            turn = turn + 1
+                
+    
+    #4. Run the processes.
+    #   Start by doing one process per core, until there are few processes left.
+    n_processes_started = 0
+    n_processes_finished = fin.value
+    n_processes_going =  n_processes_started - n_processes_finished
+    
+    #While we have a large number of processes (< n cores) to go, wait for each
+    #one to report finished before adding another to the pile
+    report("job(): Starting the " + str(turn) + " job(s)")
+    global n_cores
+    while n_processes_started < turn:
+        if n_processes_going < n_cores:
+            processes[n_processes_started].start()
+            n_processes_started = n_processes_started + 1
+            
+            report("job(): Jobs going: "+str(n_processes_going)+"\n"+
+                   "Jobs finished: "+str(n_processes_finished)+"\n"+
+                   "Jobs started: "+str(n_processes_started))
+        else:
+            time.sleep(.05)
+        n_processes_finished = fin.value
+        n_processes_going =  n_processes_started - n_processes_finished
+    
+    #Once we have few jobs to go, wait for them to finish up and get out. 
+    for process in processes:
+        process.join()
+        n_processes_finished = fin.value
+        
+        report("job(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
+               "Jobs finished: "+str(n_processes_finished)+"\n"+
+               "Jobs started: "+str(n_processes_started))
+    
+
+def subjob(coords1, coords2, pair, tree_array, bins,
+           count_matrix_array, turn, fin, savequeue):
+    """
+    subjob() runs the correlations, waits for its turn to save, and saves. 
+    
+    I'm trying out a queueing saving system. Once done with computing its result
+    each subjob will add its turn number to the savequeue and then wait until
+    its number is at the front of the queue. In theory this means that there is
+    no pileup and one long time calculation can work in peace while the shorter
+    ones go ahead. 
+    """
+    result = two_point_angular_corr_part(coords1[pair[0]][0],
                                                  coords1[pair[0]][1],
                                                  tree_array[pair[1]], bins)
-            #ii.  Normalize by number of coordinate pairs
-            result = np.diff(result)/(len(coords1[pair[0]][0])*len(coords2[pair[1]][0]))
-            #iii. Save each angular bin to its appropriate count matrix
-            for i in range(len(result)):
+    result = np.diff(result)/(len(coords1[pair[0]][0])*len(coords2[pair[1]][0]))
+        
+    
+    savequeue.append(turn)                    #With result, ready to save. Add 
+                                              #our turn number to the savequeue
+    returned = False
+    while not returned:
+        current_turn = savequeue[0]           #Now see whose turn it is.
+        if current_turn == turn:              #If it is our turn, load the
+            for i in range(len(result)):      #matrix, set our values and save.
+                count_matrix_array[i].load()
                 count_matrix_array[i].mat[pair[0],pair[1]] = result[i]
-            good_pair = good_pair + 1
-    #4. Save the result, but only if it is our turn
-    while turn.value != z:
-        time.sleep(1)
-    
-    report("job(): Pair counting done: " + str(good_pair) +
-           " pairs with pairs and " + str(empty_pair) + " pairs without")
-    
-    print(count_matrix_array)
-    for countmatrix in count_matrix_array:
-        report("job(): Saving " + file + " with tabname = " + countmatrix.name)
-        countmatrix.save()
-    turn.value = z + 1
+                count_matrix_array[i].save()
+                report("Saving " + count_matrix_array[i].name)
+            fin.value = fin.value + 1         #Then report that we have finished
+            savequeue.pop(0)                  #and remove our number from the queue
+            return                            #finally, return.
+        else:
+            time.sleep(.05)                   #If it isn't our turn, wait and
+                                              #check again.
             
     
     
