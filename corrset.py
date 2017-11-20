@@ -118,10 +118,11 @@ def main():
     
     fig = plt.figure()
     for i in range(0, len(redshift_bins)-1):
+        report("z bin "+str(redshift_bins[i])+", "+str(redshift_bins[i+1])+"\n"+
+               "corrs = "+str(corrs[i])+" \nerrs = "+str(errs[i]))
         fig.add_subplot(int("13"+ str(i+1)))
-        plt.title("z bin " + str(redshift_bins[i] + ", " + str(redshift_bins[i+1])))
+        plt.title(str("z bin " + str(redshift_bins[i]) + ", " + str(redshift_bins[i+1])))
         plt.errorbar(a_bin_middles, corrs[i], yerr=errs[i])
-        plt.loglog()
     plt.show()
     
     report("Done")
@@ -177,7 +178,6 @@ class Corrset:
         self.r_names  = kwargs['rnames']
         
         self.matrices = {}
-        self.lens = {}
         
         if kwargs['corr_now']:
             self.prep_correlation(True)
@@ -196,6 +196,7 @@ class Corrset:
         d1r  = self.matrices['d1r']
         d2r  = self.matrices['d2r']
         rr   = self.matrices['rr']
+        
         
         #Prepare the list to save the lists of matrices in
         by_zbin = []
@@ -231,24 +232,57 @@ class Corrset:
         """
         Take the matrices and the jackknife pix and compute the correlations. 
         """
+        if type(jackknife_pix) is int:
+            jackknife_pix = [jackknife_pix]
+        elif type(jackknife_pix) is range:
+            jackknife_pix = list(jackknife_pix)
+        jackknife_pix.append([])
+        
         correlation_results = []
         for pix in jackknife_pix:
-            jackknifed_group = [[],[],[],[]]
-            for d in range(len(jackknifed_group)):
-                for a in range(len(self.abins)-1):
-                    mat_to_use = np.matrix(matrix_group_list[d][a])
-                    jackknifed = self.drop_rowcol(mat_to_use, pix)
-                    jackknifed_group[d].append(jackknifed)
-            result = self.correlate(jackknifed_group)
-            correlation_results.append(result)
+            jackknifed_group = [[],[],[],[]] 
+            #Here we require there be data in the pixels before jackknifing them. 
+            if (self.check_rowcol_sum(matrix_group_list[0][0], pix) and
+                self.check_rowcol_sum(matrix_group_list[3][0], pix)):
+                for d in range(len(jackknifed_group)):
+                    for a in range(len(self.abins)-1):
+                        mat_to_use = np.matrix(matrix_group_list[d][a])
+                        jackknifed = self.drop_rowcol(mat_to_use, pix)
+                        jackknifed_group[d].append(jackknifed)
+                result = self.correlate(jackknifed_group)
+                if len(np.where(np.isnan(result))[0]) > 0 or len(result) == 0:
+                    pass
+                else:
+                    correlation_results.append(result)
         mean = np.mean(np.array(correlation_results), axis=0)
         stdev = np.std(np.array(correlation_results), axis=0)
         return mean, stdev
         
+    def check_rowcol_sum(self, matrix, index_list):    
+        """
+        Return True if the row and column at the indices or index given in 
+        index_list have anything other than all zeros. False if not.
         
+        Basically, this will be true if any data is contained in the given
+        pixel numbers. 
+        """
+        if index_list == []:
+            return True
+        to_check = 0
+        if type(index_list) is int:
+            index_list = [index_list]
+        for index in index_list:
+            to_check = to_check+np.sum(matrix[index,:])+np.sum(matrix[:,index])
+        if to_check == 0:
+            return False #no need to actually subtract this pixel, as no data
+        else:            #will be removed
+            return True
     
-    def drop_rowcol(self, matrix, index):
-        return np.delete(np.delete(matrix, index, axis=0), index, axis=1)
+    def drop_rowcol(self, matrix, index_list):
+        to_ret = np.copy(matrix)
+        if type(index_list) is int:
+            index_list = [index_list]
+        return np.delete(np.delete(to_ret, index_list, axis=0), index_list, axis=1)
     
     def correlate(self, matrix_list):
         """
@@ -258,13 +292,21 @@ class Corrset:
             The landy-szalay correlation signal associated with this matrix.
         """
         sumlist = [[],[],[],[]]
+        n_pix = np.shape(matrix_list)[2]**2
+        print("n_pix for this matrix is " + str(n_pix))
         for i in range(len(matrix_list)):
             for j in range(len(matrix_list[i])):
                 sumlist[i].append(matrix_list[i][j].sum())
         for i in range(len(matrix_list)):
-            sumlist[i] = np.array(sumlist[i], dtype=float)
+            sumlist[i] = np.array(sumlist[i], dtype=float)#/n_pix
         
-        return ((sumlist[0] - sumlist[1] - sumlist[2] - sumlist[3])/sumlist[3])
+        if len(np.where(np.equal(sumlist[3], 0.0))[0]) > 0:
+            to_ret = np.zeros(np.shape(sumlist))
+            to_ret.fill(np.nan)
+            return to_ret
+        else: 
+            print(sumlist)
+            return ((sumlist[0] - sumlist[1] - sumlist[2] + sumlist[3])/sumlist[3])
     
     
     def prep_correlation(self, save):
@@ -312,10 +354,10 @@ class Corrset:
                 os.remove(self.filepref+name)
             except FileNotFoundError:
                 pass
-        mats= correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
-                            filename=(self.filepref+name), zbins=self.zbins,
-                            abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                            d1=d1, d2=d2)
+        mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
+                              filename=(self.filepref+name), zbins=self.zbins,
+                              abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                              d1=d1, d2=d2)
         self.matrices[name] = mats
 
   
@@ -414,7 +456,7 @@ def correlate_dat( **kwargs):
         colnames1, colnames2 = kwargs.get('colnames1'), kwargs.get('colnames2')
         z1, z2 = kwargs.get('z1'), kwargs.get('z2')
         
-        #Save the metadata
+        #Save the metadata part 1
         pd.DataFrame(zbins).to_hdf(filename, key='zbins')
         pd.DataFrame(abins).to_hdf(filename, key='abins')
         pd.DataFrame(colnames1).to_hdf(filename, key='colnames1')
@@ -440,6 +482,8 @@ def correlate_dat( **kwargs):
             ra2, dec2, pix2 = get_cols(d2, colnames2[:3])
         else:
             ra2, dec2, pix2, z2 = get_cols(d2, colnames2[:4])
+            
+        
         
         report("correlate_dat(): Sending to job handler job with filename "+
                str(filename)+"\n"+"And len(ra1)="+str(len(ra1))+
@@ -457,8 +501,8 @@ def correlate_dat( **kwargs):
         
         #Divide up the ra and dec by z bin and pixel
         report("correlate_dat(): Sorting groups by z bin and pixel")
-        group1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
-        group2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
+        group1, len1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
+        group2, len2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
         
         #Generate the arguments to the processes
         n = 0
@@ -466,19 +510,19 @@ def correlate_dat( **kwargs):
         report("correlate_dat(): Run the jobs.")
         #Be cognizant of whether or not redshift is being used in a given analysis
         if no_z1 == True and no_z2 == True:
-            correlate_zbin(filename, group1[0], group2[0], n, cart_bins)
+            correlate_zbin(filename, group1[0], group2[0], n, cart_bins, len1[0], len2[0])
             n = n + 1
         elif no_z1 == True and no_z2 == False:
-            for zbin in group2:
-                correlate_zbin(filename, group1[0], zbin, n, cart_bins)
+            for i in range(0, len(group2)):
+                correlate_zbin(filename, group1[0], group2[i], n, cart_bins, len1[0], len2[i])
                 n = n + 1
         elif no_z1 == False and no_z2 == True:
-            for zbin in group1:
-                correlate_zbin(filename, zbin, group2[0], n, cart_bins)
+            for i in range(0, len(group1)):
+                correlate_zbin(filename, group1[i], group2[0], n, cart_bins, len1[i], len2[0])
                 n = n + 1
         else:
             for i in range(0, len(group1)):
-                correlate_zbin(filename, group1[i], group2[i], n, cart_bins)
+                correlate_zbin(filename, group1[i], group2[i], n, cart_bins, len1[i], len2[i])
                 n = n + 1
     
     if load == True:
@@ -504,7 +548,7 @@ def correlate_dat( **kwargs):
         return matrices
     
 
-def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
+def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_default):
     """    
     @params
     
@@ -520,11 +564,15 @@ def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
                        euclidian!!! So throw them through 
                        angular_dist_to_euclidean_dist(bins) first!
                        
-        n            - The number of the z_bin being processed by this job.
+        z            - The number of the z_bin being processed by this job.
                        This number factors into the name (bin_na) where n is
                        the number of the z bin and a the number of the angular 
                        bin. It is also what turn the job will wait for before 
                        saving. 
+                      
+        lenra1, 2    - The total number of coordinate pairs in this redshift bin
+                       for each data set
+                       
     """
     #1. Make the KDTrees that will be used for computing the pair counts
     #   Ensure that KDTrees are not made for empty pixels. 
@@ -561,7 +609,8 @@ def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
             pass
         else:
             args = (coords1, coords1, pair, tree_array, bins,
-                    count_matrix_array, turn, fin, save_queue)
+                    count_matrix_array, turn, fin, save_queue,
+                    lenra1, lenra2)
             processes.append(mp.Process(target=correlate_pixpair, args=args))
             turn = turn + 1
                 
@@ -574,7 +623,7 @@ def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
     
     #While we have a large number of processes (< n cores) to go, wait for each
     #one to report finished before adding another to the pile
-    report("correlate_zbin(): Starting the " + str(turn) + " job(s)")
+    report("correlate_zbin(): Starting the " + str(len(processes)) + " job(s)")
     global n_cores
     while n_processes_started < turn:
         if n_processes_going < n_cores:
@@ -583,7 +632,8 @@ def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
             
             report("correlate_zbin(): Jobs going: "+str(n_processes_going)+"\n"+
                    "Jobs finished: "+str(n_processes_finished)+"\n"+
-                   "Jobs started: "+str(n_processes_started))
+                   "Jobs started: "+str(n_processes_started)+"\n"+
+                   "Total jobs: " + str(len(processes)))
         else:
             time.sleep(.05)
         n_processes_finished = fin.value
@@ -596,11 +646,13 @@ def correlate_zbin(file, coords1, coords2, z, bins, nside=nside_default):
         
         report("correlate_zbin(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
                "Jobs finished: "+str(n_processes_finished)+"\n"+
-               "Jobs started: "+str(n_processes_started))
+               "Jobs started: "+str(n_processes_started)+"\n"+
+               "Total jobs: " + str(len(processes)))
     
 
 def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
-                      count_matrix_array, turn, fin, savequeue):
+                      count_matrix_array, turn, fin, savequeue,
+                      lenra1, lenra2):
     """
     subjob() runs the correlations, waits for its turn to save, and saves. 
     
@@ -613,7 +665,7 @@ def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
     result = two_point_angular_corr_part(coords1[pair[0]][0],
                                                  coords1[pair[0]][1],
                                                  tree_array[pair[1]], bins)
-    result = np.diff(result)/(len(coords1[pair[0]][0])*len(coords2[pair[1]][0]))
+    result = np.array(np.diff(result), dtype=float)/(lenra1*lenra2)
         
     
     savequeue.append(turn)                    #With result, ready to save. Add 
@@ -679,7 +731,7 @@ def by_bin(ra, dec, z, pix, zbins=redshift_bins, nside=nside_default):
             inpix = np.where(pix == p)[0]
             to_return[0].append([[ra[j] for j in inpix],
                                 [dec[j] for j in inpix]])
-        return to_return
+        return to_return, [len(ra)]
         
         
     #Step 1: Construct the list to return.
@@ -701,8 +753,11 @@ def by_bin(ra, dec, z, pix, zbins=redshift_bins, nside=nside_default):
     
     #Attempt 2: tried to break the process up into two list construction parts
     #Doubled speed, but it still takes a few minutes for the test sample :\
+    
+    len_list = []
     for z in range(len(zbins)-1):
         inbin = np.where(indices == z)[0]
+        len_list.append(len(inbin))
         specific_z_binned_ra  = [ra[j]  for j in inbin]
         specific_z_binned_dec = [dec[j] for j in inbin]
         specific_z_binned_pix = np.array([pix[j] for j in inbin], dtype=int)
@@ -717,9 +772,10 @@ def by_bin(ra, dec, z, pix, zbins=redshift_bins, nside=nside_default):
         for j in range(n_pix): #Healpix indexing
             groups[i][j][0] = np.array(groups[i][j][0], dtype=float)
             groups[i][j][1] = np.array(groups[i][j][1], dtype=float)
+    len_list = np.array(len_list, dtype=int)
     
     report("by_bin(): Done sorting into bins. Returning")
-    return groups
+    return groups, len_list
         
 def to_zbins(zlist, zbins=redshift_bins):
     """
@@ -774,17 +830,21 @@ def ra_dec_to_xyz(ra, dec):
     @returns
         x, y, z - ndarrays
     """
-    sin_ra = np.sin(ra * np.pi / 180.)
-    cos_ra = np.cos(ra * np.pi / 180.)
+    ra_to_use = np.array(ra, dtype=float)
+    dec_to_use = np.array(dec, dtype=float)
+    
+    sin_ra = np.sin(ra_to_use * np.pi / 180.)
+    cos_ra = np.cos(ra_to_use * np.pi / 180.)
 
-    sin_dec = np.sin(np.pi / 2 - dec * np.pi / 180.)
-    cos_dec = np.cos(np.pi / 2 - dec * np.pi / 180.)
+    sin_dec = np.sin(np.pi / 2 - dec_to_use * np.pi / 180.)
+    cos_dec = np.cos(np.pi / 2 - dec_to_use * np.pi / 180.)
 
     return  [cos_ra * sin_dec, sin_ra * sin_dec, cos_dec]
 
 def angular_dist_to_euclidean_dist(D, r=1):
     """convert angular distances to euclidean distances"""
-    return 2 * r * np.sin(0.5 * D * np.pi / 180.)
+    D_to_use = np.array(D, dtype=float)
+    return 2 * r * np.sin(0.5 * D_to_use * np.pi / 180.)
 
 if __name__ == "__main__":
     main()
