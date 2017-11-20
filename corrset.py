@@ -52,8 +52,8 @@ redshift_bins = np.linspace(0.3, 1.5, num=4)
 """
 Program options
 """
-CORRELATE_AGAIN = True
-QUALIFY_AGAIN = True
+CROSS_CORRELATE_AGAIN = True
+QUALIFY_AGAIN = False
 rep_to_file = False
 
 """
@@ -118,7 +118,7 @@ for i in range(n_pix):
 
 def main():
     """
-    Handles everything to run the standard correlation we're interested in
+    Runs a test cross-correlation on a small data sample. 
     """
     if QUALIFY_AGAIN:
         qualifier.main()
@@ -133,13 +133,13 @@ def main():
                       d1names = ['ra', 'dec', 'pix', 'redshift'],
                       d2names = ['ra', 'dec', 'pix', 'redshift'],
                       rnames  = ['ra', 'dec', 'pix'],
-                      corr_now = CORRELATE_AGAIN)
+                      crosscorr_now = CROSS_CORRELATE_AGAIN)
     
-    corrset.prep_correlation(save=False)
+    corrset.prep_crosscorrelation(save=False)
     
     report("Finished generating/loading correlation. Now reading results")
     
-    corrs, errs = corrset.read_correlation()
+    corrs, errs = corrset.read_crosscorrelation()
     a_bin_middles = (angular_bins[1:] + angular_bins[:-1]) / 2
     
     report("Finished reading results. Plotting")
@@ -209,11 +209,13 @@ class Corrset:
         
         self.matrices = {}
         
-        if kwargs['corr_now']:
-            self.prep_correlation(True)
+        if kwargs['crosscorr_now']:
+            self.prep_crosscorrelation(True)
         
     def corruscant(self):
         """
+        CROSS-CORRELATION
+        
         Implementation of corrscant courtesy of A. Pellegrino
         
         May or may not be significantly faster. Probably is.
@@ -267,8 +269,10 @@ class Corrset:
                                                       est_type="landy-szalay"))
         return results
     
-    def read_correlation(self, jackknife_pix=range(0, n_pix)):
+    def read_crosscorrelation(self, jackknife_pix=range(0, n_pix)):
         """
+        CROSS-CORRELATION
+        
         Finds the pair count term associated with a given z_bin.
         Returns the total number of objects, the numpy arrays of counts and the
         bins. 
@@ -322,15 +326,84 @@ class Corrset:
         results_by_bin = []
         errors_by_bin = []
         for i in range(len(self.zbins)-1):
-            results, errors = self.jackknife(by_zbin[i], jackknife_pix)
+            results, errors = self.jackknife_crosscorr(by_zbin[i], jackknife_pix)
             results_by_bin.append(results)
             errors_by_bin.append(errors)
         
         return results_by_bin, errors_by_bin
     
-    def jackknife(self, matrix_group_list, jackknife_pix):
+    def read_autocorrelation(self, d='d1', jackknife_pix=range(0, n_pix)):
         """
-        Take the matrices and the jackknife pix and compute the correlations. 
+        AUTOCORRELATION
+        
+        Nearly identical to the cross correlation, except with a couple terms
+        renamed and some logic switched around.
+        
+        Finds the pair count term associated with a given z_bin.
+        Returns the total number of objects, the numpy arrays of counts and the
+        bins. 
+        
+        @params
+            d             - 'd1' or 'd2' - the data set to run the autocorr on
+            jackknife_pix - int, array of ints, or array of array of ints
+                            The pixels to remove from the analysis before
+                            calculating the correlation signal. 
+                            
+                            Removes each pixel or list of pixels, one at a time,
+                            and returns the mean and standard deviation of the
+                            result.
+                            
+                            At the moment, we also add an empty list to whatever
+                            the computation is, so there is also 1 instance of 
+                            the entire data set in the resulting PDFs
+        
+        @returns
+            results, errors - list of float numpy arrays with results, both in
+                              shape = (len(z_bins)-1, len(a_bins)-1)
+                              
+        """
+        #Pull out the dicts which contain the CountMatrix objects for each pair
+        dd = self.matrices[(d+d)]
+        dr  = self.matrices[(d+'r')]
+        rr   = self.matrices['rr']
+        
+        
+        #Prepare the list to save the lists of matrices in
+        by_zbin = []
+        for i in range(len(self.zbins)-1):
+            by_zbin.append([[], [], []])
+        
+        #Go through each dict and pull out the relevant bins per list.
+        #What we want: shape of by_zbin = (len(zbins), 4, len(abins))
+        matrix_dicts = [dd, dr]
+        for j in range(len(matrix_dicts)):
+            for i in range(len(self.zbins)-1):
+                a_bin = []
+                for k in range(len(self.abins)-1):
+                    matrix = matrix_dicts[j]['bin_' + str(i) + str(k)].mat
+                    a_bin.append(matrix)
+                by_zbin[i][j] = a_bin
+        for k in range(len(self.abins)-1):
+            matrix = rr['bin_' + str(0) + str(k)].mat
+            for i in range(len(self.zbins)-1): 
+                by_zbin[i][3].append(matrix)
+                
+        #Now that we have the matrices, it's time to jackknife for each bin.
+        results_by_bin = []
+        errors_by_bin = []
+        for i in range(len(self.zbins)-1):
+            results, errors = self.jackknife_autocorr(by_zbin[i], jackknife_pix)
+            results_by_bin.append(results)
+            errors_by_bin.append(errors)
+        
+        return results_by_bin, errors_by_bin
+    
+    
+    def jackknife_crosscorr(self, matrix_group_list, jackknife_pix):
+        """
+        CROSS-CORRELATION
+        
+        Take the matrices and the jackknife pix and compute the crosscorrelations. 
     
         Corresponds to all the data in 1 z bin.         
         
@@ -339,13 +412,13 @@ class Corrset:
                 list of lists of matrices in 
                 shape = (4, len(a_bins)-1, n_pix, n_pix)
                 which is to have the jackknife_pix removed before having its
-                correlation signal calculated
+                crosscorrelation signal calculated
             jackknife_pix
                 as in read_correlation(). 
                 int or list of ints or list of list of ints.
         
         @returns:
-            mean and standard deviation of the correlation signal from these
+            mean and standard deviation of the crosscorrelation signal from these
             matrices and jackknifing parameters.
         """
         if type(jackknife_pix) is int:
@@ -365,7 +438,7 @@ class Corrset:
                         mat_to_use = np.matrix(matrix_group_list[d][a])
                         jackknifed = self.drop_rowcol(mat_to_use, pix)
                         jackknifed_group[d].append(jackknifed)
-                result = self.correlate(jackknifed_group)
+                result = self.crosscorrelate(jackknifed_group)
                 if len(np.where(np.isnan(result))[0]) > 0 or len(result) == 0:
                     pass
                 else:
@@ -373,7 +446,302 @@ class Corrset:
         mean = np.mean(np.array(correlation_results), axis=0)
         stdev = np.std(np.array(correlation_results), axis=0)
         return mean, stdev
+    
+    
+    def jackknife_autocorr(self, matrix_group_list, jackknife_pix):
+        """
+        AUTOCORRELATION
         
+        Take the matrices and the jackknife pix and compute the crosscorrelations. 
+    
+        Corresponds to all the data in 1 z bin.         
+        
+        @params:
+            matrix_group_list
+                list of lists of matrices in 
+                shape = (3, len(a_bins)-1, n_pix, n_pix)
+                which is to have the jackknife_pix removed before having its
+                autocorrelation signal calculated
+            jackknife_pix
+                as in read_correlation(). 
+                int or list of ints or list of list of ints.
+        
+        @returns:
+            mean and standard deviation of the autocorrelation signal from these
+            matrices and jackknifing parameters.
+        """
+        if type(jackknife_pix) is int:
+            jackknife_pix = [jackknife_pix]
+        elif type(jackknife_pix) is range:
+            jackknife_pix = list(jackknife_pix)
+        jackknife_pix.append([])
+        
+        correlation_results = []
+        for pix in jackknife_pix:
+            jackknifed_group = [[],[],[]] 
+            #Here we require there be data in the pixels before jackknifing them. 
+            if (self.check_rowcol_sum(matrix_group_list[0][0], pix) and
+                self.check_rowcol_sum(matrix_group_list[2][0], pix)):
+                for d in range(len(jackknifed_group)):
+                    for a in range(len(self.abins)-1):
+                        mat_to_use = np.matrix(matrix_group_list[d][a])
+                        jackknifed = self.drop_rowcol(mat_to_use, pix)
+                        jackknifed_group[d].append(jackknifed)
+                result = self.autocorrelate(jackknifed_group)
+                if len(np.where(np.isnan(result))[0]) > 0 or len(result) == 0:
+                    pass
+                else:
+                    correlation_results.append(result)
+        mean = np.mean(np.array(correlation_results), axis=0)
+        stdev = np.std(np.array(correlation_results), axis=0)
+        return mean, stdev
+
+    
+    def crosscorrelate(self, matrix_list):
+        """
+        CROSS-CORRELATION
+        
+        Computes the landy-szalay cross-correlation from this matrix (2d) list
+        
+        @params
+            matrix_list shape = (4, len(abins), n_pix, n_pix)
+        @returns
+            The landy-szalay crosscorrelation signal associated with this matrix.
+        """
+        sumlist = [[],[],[],[]]
+        for i in range(len(matrix_list)):
+            for j in range(len(matrix_list[i])):
+                sumlist[i].append(matrix_list[i][j].sum())
+        for i in range(len(matrix_list)):
+            sumlist[i] = np.array(sumlist[i], dtype=float)#/n_pix
+        
+        if len(np.where(np.equal(sumlist[3], 0.0))[0]) > 0:
+            to_ret = np.zeros(np.shape(sumlist))
+            to_ret.fill(np.nan)
+            return to_ret
+        else: 
+            return ((sumlist[0] - sumlist[1] - sumlist[2] + sumlist[3])/sumlist[3])
+    
+    def autocorrelate(self, matrix_list):
+        """
+        AUTO-CORRELATION
+        
+        Computes the landy-szalay auto-correlation from this matrix (2d) list
+        
+        @params
+            matrix_list shape = (3, len(abins), n_pix, n_pix)
+                                 3: d1d1, d1r, rr
+        @returns
+            The landy-szalay autocorrelation signal associated with this matrix.
+        """
+        sumlist = [[],[],[]]
+        for i in range(len(matrix_list)):
+            for j in range(len(matrix_list[i])):
+                sumlist[i].append(matrix_list[i][j].sum())
+        for i in range(len(matrix_list)):
+            sumlist[i] = np.array(sumlist[i], dtype=float)#/n_pix
+        
+        if len(np.where(np.equal(sumlist[2], 0.0))[0]) > 0:
+            to_ret = np.zeros(np.shape(sumlist))
+            to_ret.fill(np.nan)
+            return to_ret
+        else: 
+            return ((sumlist[0] - 2*sumlist[1] + sumlist[2])/sumlist[2])
+        pass
+    
+    
+    def prep_crosscorrelation(self, save, special_r = False, overwrite=False, 
+                              special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
+        """
+        CROSS-CORRELATION
+        
+        Either generates or loads up the cross correlation, in prep for 
+        read_crosscorrelation. If a matrix is already
+        
+        @params
+            save - whether or not to generate new correlations (True) or load
+                   an already calculated one.
+                   
+            overwrite - if there are already matrices under the correct names
+                        prep_crosscorrelation will only re-compute correlations
+                        if overwrite == True
+            
+            special_r     - Set True if counting RR if RR has been computed before
+            special_r_cat - The name of the file where the old RR is stored
+                            Using special_r forces save to be False
+        
+        @results
+            Gets all of the cross-correlation matrices into self.matrices
+        """
+        report("prep_crosscorrelation(save = " + str(save) + "): Starting...")
+        
+        if 'd1d2' in self.matrices and overwrite == False:
+            pass
+        else:
+            report("d1d2")
+            #D1D2 
+            self.pair_count(save, self.d1, self.d2, False, False,
+                            'd1d2', self.d1_names, self.d2_names)
+        
+        if 'd1r' in self.matrices and overwrite == False:
+            pass
+        else:        
+            report("d1r")
+            #D1R
+            self.pair_count(save, self.d1,  self.r, False,  True,
+                            'd1r',  self.d1_names,  self.r_names)
+        
+        if 'd2r' in self.matrices and overwrite == False:
+            pass
+        else:       
+            report("d2r")
+            #D2R
+            self.pair_count(save, self.d2,  self.r, False,  True,
+                            'd2r',  self.d2_names,  self.r_names)
+        
+        if 'rr' in self.matrices and overwrite == False:
+            pass
+        else:        
+            report("rr")
+            #RR
+            self.pair_count(save,  self.r,  self.r,  True,  True,
+                            'rr',   self.r_names,   self.r_names,
+                            special_r = special_r, 
+                            special_r_cat = special_r_cat)
+    
+        report("prep_crosscorrelation(save = " + str(save) + "):done")
+    
+    def prep_autocorrelation(self, save, d="d1", special_r = False, overwrite=False,
+                             special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):    
+        """
+        AUTOCORRELATION
+        
+        As prep_crosscorrelation, but for an autocorrelation 
+        
+        @params
+            save - whether or not to generate new correlations (True) or load
+                   an already calculated one.
+            
+            d    - the data set to run the autocorrelation on. Can be 'd1' or 'd2'
+                   
+            overwrite - if there are already matrices under the correct names
+                        prep_crosscorrelation will only re-compute correlations
+                        if overwrite == True
+            
+            special_r     - Set True if counting RR if RR has been computed before
+            special_r_cat - The name of the file where the old RR is stored
+                            Using special_r forces save to be False
+        
+        @results
+            Gets all of the cross-correlation matrices into self.matrices
+        """
+        report("prep_autocorrelation(save = " + str(save) + "): Starting...")
+        
+        
+        if d == "d1":
+            if 'd1d1' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("d1d1")
+                #D1D2 
+                self.pair_count(save, self.d1, self.d1, False, False,
+                                'd1d1', self.d1_names, self.d1_names)
+            
+            if 'd1r' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("d1r")
+                #D1R
+                self.pair_count(save, self.d1,  self.r, False,  True,
+                                'd1r',  self.d1_names,  self.r_names)
+            
+            if 'rr' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("rr")
+                #RR
+                self.pair_count(save,  self.r,  self.r,  True,  True,
+                                'rr',   self.r_names,   self.r_names,
+                                special_r = special_r, 
+                                special_r_cat = special_r_cat)
+        elif d == "d2":
+            if 'd2d2' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("d2d2")
+                #D1D2 
+                self.pair_count(save, self.d2, self.d2, False, False,
+                                'd2d2', self.d2_names, self.d2_names)
+            
+            if 'd2r' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("d2r")
+                #D1R
+                self.pair_count(save, self.d2,  self.r, False,  True,
+                                'd2r',  self.d2_names,  self.r_names)
+            
+            if 'rr' in self.matrices and overwrite == False:
+                pass
+            else:
+                report("rr")
+                #RR
+                self.pair_count(save,  self.r,  self.r,  True,  True,
+                                'rr',   self.r_names,   self.r_names,
+                                special_r = special_r, 
+                                special_r_cat = special_r_cat)
+        else: 
+            raise ValueError((str(d) + " is not 'd1' or 'd2'"))
+    
+        report("prep_autocrosscorrelation(save = " + str(save) + "):done")
+        
+    
+    def pair_count(self, save, d1, d2, no_z1, no_z2, name, colnames1, colnames2,
+                   special_r = False, 
+                   special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
+        """
+        Does the pair counting in a smart parallelized way
+        
+        @params
+            save          - Whether or not to save a new correlation (True) or
+                            load an old one (False)
+            d1, 2         - The file paths to datasets 1 and 2
+            no_z1, 2      - Whether or not to use z binning for datasets 1 and 2
+            name          - The name to append to self.filepref to get the file
+                            path where the correlation will be saved
+            colnames1, 2  - Array of the names of the columns for data sets 1 
+                            and 2
+            
+            special_r     - Set True if counting RR if RR has been computed before
+            special_r_cat - The name of the file where the old RR is stored
+                            Using special_r forces save to be False
+        
+        @result
+            sets self.matrices[name] to a list of corresponding correlation 
+            matrices of shape = ((len(z_bins)-1 or 1 (for no_z1 or 2 = True)), 
+                                 len(a_bins)-1, n_pix, n_pix)
+        """
+        if save == True:
+            try:
+                os.remove(self.filepref+name)
+            except FileNotFoundError:
+                pass
+        
+        if special_r:
+            mats  = correlate_dat(save=False, load=True, no_z1=no_z1, no_z2=no_z1,
+                                  filename=special_r_cat, zbins=self.zbins,
+                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                                  d1=d1, d2=d2)
+            self.matrices[name] = mats
+        
+        else:
+            mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
+                                  filename=(self.filepref+name), zbins=self.zbins,
+                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                                  d1=d1, d2=d2)
+            self.matrices[name] = mats
+
+          
     def check_rowcol_sum(self, matrix, index_list):    
         """
         Return True if the row and column at the indices or index given in 
@@ -421,112 +789,7 @@ class Corrset:
             index_list = [index_list]
         return np.delete(np.delete(to_ret, index_list, axis=0), index_list, axis=1)
     
-    def correlate(self, matrix_list):
-        """
-        Computes the landy-szalay correlation from this matrix (2d) list
-        
-        @params
-            matrix_list shape = (4, len(abins), n_pix, n_pix)
-        @returns
-            The landy-szalay correlation signal associated with this matrix.
-        """
-        sumlist = [[],[],[],[]]
-        for i in range(len(matrix_list)):
-            for j in range(len(matrix_list[i])):
-                sumlist[i].append(matrix_list[i][j].sum())
-        for i in range(len(matrix_list)):
-            sumlist[i] = np.array(sumlist[i], dtype=float)#/n_pix
-        
-        if len(np.where(np.equal(sumlist[3], 0.0))[0]) > 0:
-            to_ret = np.zeros(np.shape(sumlist))
-            to_ret.fill(np.nan)
-            return to_ret
-        else: 
-            return ((sumlist[0] - sumlist[1] - sumlist[2] + sumlist[3])/sumlist[3])
     
-    
-    def prep_correlation(self, save):
-        """
-        Either generates or loads up the correlation, in prep for read_correlation. 
-        
-        @params
-            save - whether or not to generate new correlations (True) or load
-                   an already calculated one.
-        
-        @results
-            Gets all of the cross-correlation matrices into self.matrices
-        """
-        report("prep_correlation(save = " + str(save) + "): Starting...")
-        
-        report("d1d2")
-        #D1D2 
-        self.pair_count(save, self.d1, self.d2, False, False,
-                        'd1d2', self.d1_names, self.d2_names)
-        
-        report("d1r")
-        #D1R
-        self.pair_count(save, self.d1,  self.r, False,  True,
-                        'd1r',  self.d1_names,  self.r_names)
-       
-        report("d2r")
-        #D2R
-        self.pair_count(save, self.d2,  self.r, False,  True,
-                        'd2r',  self.d2_names,  self.r_names)
-        
-        report("rr")
-        #RR
-        self.pair_count(save,  self.r,  self.r,  True,  True,
-                        'rr',   self.r_names,   self.r_names,
-                        special_r = True)
-    
-        report("prep_correlation(save = " + str(save) + "):done")
-    
-    def pair_count(self, save, d1, d2, no_z1, no_z2, name, colnames1, colnames2,
-                   special_r = False, 
-                   special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
-        """
-        Does the pair counting in a smart parallelized way
-        
-        @params
-            save          - Whether or not to save a new correlation (True) or
-                            load an old one (False)
-            d1, 2         - The file paths to datasets 1 and 2
-            no_z1, 2      - Whether or not to use z binning for datasets 1 and 2
-            name          - The name to append to self.filepref to get the file
-                            path where the correlation will be saved
-            colnames1, 2  - Array of the names of the columns for data sets 1 
-                            and 2
-            
-            special_r     - Set True if counting RR if RR has been computed before
-            special_r_cat - The name of the file where the old RR is stored
-                            Using special_r forces save to be False
-        
-        @result
-            sets self.matrices[name] to a list of corresponding correlation 
-            matrices of shape = ((len(z_bins)-1 or 1 (for no_z1 or 2 = True)), 
-                                 len(a_bins)-1, n_pix, n_pix)
-        """
-        if save == True:
-            try:
-                os.remove(self.filepref+name)
-            except FileNotFoundError:
-                pass
-        
-        if special_r:
-            mats  = correlate_dat(save=False, load=True, no_z1=no_z1, no_z2=no_z1,
-                                  filename=special_r_cat, zbins=self.zbins,
-                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2)
-            self.matrices[name] = mats
-        
-        else:
-            mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
-                                  filename=(self.filepref+name), zbins=self.zbins,
-                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2)
-            self.matrices[name] = mats
-
-  
 class CountMatrix:
     """
     Handler for the numpy matrix that holds the pair counting data.
