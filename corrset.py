@@ -5,7 +5,16 @@ Created on Tue Oct 31 11:23:13 2017
 
 Where the magic happens
 
-@author: csh4
+@author: Cassandra Henderson
+
+
+development goals:
+    1. Autocorrelation option
+    2. More options for qualifier
+    3. Split AGN catalog into types 1 and 2
+    4. Save RR result between corrsets
+    5. Port over to Tiger
+    6. Default method to save result.
 """
 
 import gc
@@ -23,32 +32,67 @@ from   corruscant          import twopoint
 from   corruscant          import clustering
 from   sklearn.neighbors   import KDTree
 
+"""
+File options
+"""
 dir_path = "/scr/depot0/csh4/"
-d1d2_p   = dir_path + "cats/corrs/d1d2.hdf5"
-d1r_p    = dir_path + "cats/corrs/d1r.hdf5"
-d2r_p    = dir_path + "cats/corrs/d2r.hdf5"
-rr_p     = dir_path + "cats/corrs/rr.hdf5"
+logfile =  dir_path + "logs/corrset.txt"
+filepref = dir_path + "cats/corrs/corr_"
+p_rand_q = dir_path + "cats/processed/rand_q.hdf5"
+p_agn_q =  dir_path + "cats/processed/agn_q.hdf5"
+p_hsc_q =  dir_path + "cats/processed/hsc_q.hdf5"
 
-n_cores = mp.cpu_count()
+"""
+Bin opetions
+"""
 nside_default = 8
 angular_bins  = np.logspace(np.log10(.0025), np.log10(1.5), num=12)
 redshift_bins = np.linspace(0.3, 1.5, num=4)
 
+"""
+Program options
+"""
+CORRELATE_AGAIN = True
+QUALIFY_AGAIN = True
+rep_to_file = False
+
+"""
+Log Functions
+"""
+if rep_to_file:
+    logfile = open(logfile, "a")
 start_time = int(time.time())
 #Defining a couple in-method helper functions
 def current_time():
     return (int(time.time()) - start_time)
 def report(report_string):
-    sys.stdout.flush()
-    time = current_time()
-    print("")
-    print("--- corrset reporting ---")
-    print(report_string)
-    print("Time is " + str(time) + " seconds from start. ", end="")
-    print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
-    print("")
-    sys.stdout.flush()
-    gc.collect()
+    if rep_to_file:
+        sys.stdout.flush()
+        time = current_time()
+        print("", file=logfile)
+        print("--- corrset reporting ---", file=logfile)
+        print(report_string, file=logfile)
+        print("Time is " + str(time) + " seconds from start. ", end="", file=logfile)
+        print("Memory use is " + str(psutil.virtual_memory().percent) + "%", file=logfile)
+        print("", file=logfile)
+        sys.stdout.flush()
+        gc.collect()
+    else:
+        sys.stdout.flush()
+        time = current_time()
+        print("")
+        print("--- corrset reporting ---")
+        print(report_string)
+        print("Time is " + str(time) + " seconds from start. ", end="")
+        print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
+        print("")
+        sys.stdout.flush()
+        gc.collect()
+        
+"""
+Other global things
+"""
+n_cores = mp.cpu_count()
 
 #Making a global list of pair-pair combos to run correlations on
 pairs = []
@@ -72,9 +116,6 @@ for i in range(n_pix):
     
 
 
-CORRELATE_AGAIN = True
-QUALIFY_AGAIN = True
-
 def main():
     """
     Handles everything to run the standard correlation we're interested in
@@ -82,21 +123,11 @@ def main():
     if QUALIFY_AGAIN:
         qualifier.main()
 
-    
-    report("Welcome to corrset.main(). Running a correlation on the default catalogs.")
-    
-    dir_path = "/scr/depot0/csh4/"
-    
-    p_rand_q = dir_path + "cats/processed/rand_q.hdf5"
-    p_agn_q =  dir_path + "cats/processed/agn_q.hdf5"
-    p_hsc_q =  dir_path + "cats/processed/hsc_q.hdf5"
-        
-    angular_bins  = np.logspace(np.log10(.0025), np.log10(1.5), num=12)
-    redshift_bins = np.linspace(0.3, 1.5, num=4)
+    report("First report: datetime = " + time.asctime(time.localtime(time.time())))
     
     report("Starting correlation process")
     
-    corrset = Corrset(filepref="/scr/depot0/csh4/cats/corrs/corr_", 
+    corrset = Corrset(filepref=filepref, 
                       d1=p_agn_q, d2=p_hsc_q, r=p_rand_q, 
                       zbins=redshift_bins, abins = angular_bins,
                       d1names = ['ra', 'dec', 'pix', 'redshift'],
@@ -140,9 +171,9 @@ class Corrset:
     
     This handler will be able to:
         -construct the hdf with ra, dec, and z data from two catalogs, 
-         !quickly! and !parallelized!
-        -read the hdf for statistical information
-        -
+         !quickly! and !parallelized! (hopefully)
+        -read the hdf for statistical information 
+        -Compute a cross correlation as well as an autocorrelation
     """
     def __init__(self, **kwargs): 
         """
@@ -151,18 +182,20 @@ class Corrset:
         Gets/Initializes the metadata.
         
         @params
-            filepref     --
+            filepref     -- prefix of the files in which to save the cross 
+                            correlation hdfs
             
-            d1, d2, r    --
+            d1, d2, r    -- file locations of hdfs containing d1, d2, and r for
+                            the cross correlation
             
-            d1names,     --
-            d2names,
+            d1names,     -- column names in d1, d2, and r for ra, dec, pixel and
+            d2names,        redshift
             rnames
             
-            zbins, abins --
+            zbins, abins -- the redshift and angular bins to use in the analysis
             
-            corr_now     -- Run the correlation right now and save and read out
-                            the results.
+            corr_now     -- If True, run the correlation right now and save.
+            
         """
         self.filepref = kwargs['filepref']
         self.d1       = kwargs['d1']
@@ -184,6 +217,8 @@ class Corrset:
         Implementation of corrscant courtesy of A. Pellegrino
         
         May or may not be significantly faster. Probably is.
+        
+        Returns the correlation. Errors are probably contained therein.
         """
         #Step 0: Retrieve Data
         report("corruscant(): Preparing inputs.")
@@ -204,7 +239,7 @@ class Corrset:
             ra2z.append([ra2[i] for i in in_zbin2])
             dec2z.append([dec2[i] for i in in_zbin2])
         
-        #Step 2: Prepare to pass to Corruscant
+        #Step 2: Prepare to pass to Corruscant by making trees
         report("corruscant(): growing trees.")
         dx,dy,dz=sph2cart(1.0, ra3, dec3, degree=True)
         dataxyz=np.array([dx,dy,dz]).transpose()
@@ -237,9 +272,25 @@ class Corrset:
         Finds the pair count term associated with a given z_bin.
         Returns the total number of objects, the numpy arrays of counts and the
         bins. 
+        
+        @params
+            jackknife_pix - int, array of ints, or array of array of ints
+                            The pixels to remove from the analysis before
+                            calculating the correlation signal. 
+                            
+                            Removes each pixel or list of pixels, one at a time,
+                            and returns the mean and standard deviation of the
+                            result.
+                            
+                            At the moment, we also add an empty list to whatever
+                            the computation is, so there is also 1 instance of 
+                            the entire data set in the resulting PDFs
+        
+        @returns
+            results, errors - list of float numpy arrays with results, both in
+                              shape = (len(z_bins)-1, len(a_bins)-1)
+                              
         """
-        
-        
         #Pull out the dicts which contain the CountMatrix objects for each pair
         d1d2 = self.matrices['d1d2']
         d1r  = self.matrices['d1r']
@@ -280,6 +331,22 @@ class Corrset:
     def jackknife(self, matrix_group_list, jackknife_pix):
         """
         Take the matrices and the jackknife pix and compute the correlations. 
+    
+        Corresponds to all the data in 1 z bin.         
+        
+        @params:
+            matrix_group_list
+                list of lists of matrices in 
+                shape = (4, len(a_bins)-1, n_pix, n_pix)
+                which is to have the jackknife_pix removed before having its
+                correlation signal calculated
+            jackknife_pix
+                as in read_correlation(). 
+                int or list of ints or list of list of ints.
+        
+        @returns:
+            mean and standard deviation of the correlation signal from these
+            matrices and jackknifing parameters.
         """
         if type(jackknife_pix) is int:
             jackknife_pix = [jackknife_pix]
@@ -314,6 +381,15 @@ class Corrset:
         
         Basically, this will be true if any data is contained in the given
         pixel numbers. 
+        
+        @params 
+            matrix      - np.matrix to look in
+            index_list  - int or list of ints of rows/columns to check for
+                          values in
+        
+        @returns
+            True if there are non zero values in the given rows and columnsm
+            False if all the values are zero
         """
         if index_list == []:
             return True
@@ -328,6 +404,18 @@ class Corrset:
             return True
     
     def drop_rowcol(self, matrix, index_list):
+        """
+        Remove the rows and columns corresponding to index list from the given
+        matrix. Return the clipped matrix.
+        
+        
+        @params 
+            matrix      - np.matrix to clip
+            index_list  - int or list of ints of rows/columns to clip from matrix
+        
+        @returns
+            the matrix with rows and columns from index list removed
+        """
         to_ret = np.copy(matrix)
         if type(index_list) is int:
             index_list = [index_list]
@@ -335,14 +423,14 @@ class Corrset:
     
     def correlate(self, matrix_list):
         """
+        Computes the landy-szalay correlation from this matrix (2d) list
+        
         @params
             matrix_list shape = (4, len(abins), n_pix, n_pix)
         @returns
             The landy-szalay correlation signal associated with this matrix.
         """
         sumlist = [[],[],[],[]]
-        n_pix = np.shape(matrix_list)[2]**2
-        print("n_pix for this matrix is " + str(n_pix))
         for i in range(len(matrix_list)):
             for j in range(len(matrix_list[i])):
                 sumlist[i].append(matrix_list[i][j].sum())
@@ -354,23 +442,21 @@ class Corrset:
             to_ret.fill(np.nan)
             return to_ret
         else: 
-            print(sumlist)
             return ((sumlist[0] - sumlist[1] - sumlist[2] + sumlist[3])/sumlist[3])
     
     
     def prep_correlation(self, save):
         """
         Either generates or loads up the correlation, in prep for read_correlation. 
+        
+        @params
+            save - whether or not to generate new correlations (True) or load
+                   an already calculated one.
+        
+        @results
+            Gets all of the cross-correlation matrices into self.matrices
         """
-        #Calls pair_count for each relevant set (d1d2, d1r, d2r, rr)
-        #Loads if possible instead of running again
-        #End goal is to get every count matrix into self.matrices and every name
-        #into self.mat_name_list.
-        
-        #read and prep correlation have to handle all the funky shapes for the
-        #correlations involving r.
-        
-        report("Actually doing the pair counting...")
+        report("prep_correlation(save = " + str(save) + "): Starting...")
         
         report("d1d2")
         #D1D2 
@@ -381,7 +467,7 @@ class Corrset:
         #D1R
         self.pair_count(save, self.d1,  self.r, False,  True,
                         'd1r',  self.d1_names,  self.r_names)
-        
+       
         report("d2r")
         #D2R
         self.pair_count(save, self.d2,  self.r, False,  True,
@@ -390,24 +476,55 @@ class Corrset:
         report("rr")
         #RR
         self.pair_count(save,  self.r,  self.r,  True,  True,
-                        'rr',   self.r_names,   self.r_names)
+                        'rr',   self.r_names,   self.r_names,
+                        special_r = True)
     
-        report("done")
+        report("prep_correlation(save = " + str(save) + "):done")
     
-    def pair_count(self, save, d1, d2, no_z1, no_z2, name, colnames1, colnames2):
+    def pair_count(self, save, d1, d2, no_z1, no_z2, name, colnames1, colnames2,
+                   special_r = False, 
+                   special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
         """
         Does the pair counting in a smart parallelized way
+        
+        @params
+            save          - Whether or not to save a new correlation (True) or
+                            load an old one (False)
+            d1, 2         - The file paths to datasets 1 and 2
+            no_z1, 2      - Whether or not to use z binning for datasets 1 and 2
+            name          - The name to append to self.filepref to get the file
+                            path where the correlation will be saved
+            colnames1, 2  - Array of the names of the columns for data sets 1 
+                            and 2
+            
+            special_r     - Set True if counting RR if RR has been computed before
+            special_r_cat - The name of the file where the old RR is stored
+                            Using special_r forces save to be False
+        
+        @result
+            sets self.matrices[name] to a list of corresponding correlation 
+            matrices of shape = ((len(z_bins)-1 or 1 (for no_z1 or 2 = True)), 
+                                 len(a_bins)-1, n_pix, n_pix)
         """
         if save == True:
             try:
                 os.remove(self.filepref+name)
             except FileNotFoundError:
                 pass
-        mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
-                              filename=(self.filepref+name), zbins=self.zbins,
-                              abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                              d1=d1, d2=d2)
-        self.matrices[name] = mats
+        
+        if special_r:
+            mats  = correlate_dat(save=False, load=True, no_z1=no_z1, no_z2=no_z1,
+                                  filename=special_r_cat, zbins=self.zbins,
+                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                                  d1=d1, d2=d2)
+            self.matrices[name] = mats
+        
+        else:
+            mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
+                                  filename=(self.filepref+name), zbins=self.zbins,
+                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
+                                  d1=d1, d2=d2)
+            self.matrices[name] = mats
 
   
 class CountMatrix:
@@ -534,7 +651,7 @@ def correlate_dat( **kwargs):
             
         
         
-        report("correlate_dat(): Sending to job handler job with filename "+
+        report("correlate_dat(): Sending to correlate_zbin() with filename "+
                str(filename)+"\n"+"And len(ra1)="+str(len(ra1))+
                " and len(ra2)="+str(len(ra2)))
         
@@ -680,6 +797,7 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
         if n_processes_going < n_cores:
             processes[n_processes_started].start()
             n_processes_started = n_processes_started + 1
+            n_processes_finished = fin.value
             n_processes_going =  n_processes_started - n_processes_finished
             
             report("correlate_zbin(): Jobs going: "+str(n_processes_going)+"\n"+
@@ -729,6 +847,8 @@ def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
     while not returned:
         current_turn = savequeue[0]           #Now see whose turn it is.
         if current_turn == turn:              #If it is our turn, load the
+            report("correlate_pixpair(): Reached turn " + str(turn) + " \n" +
+                   "Savequeue is length " + str(len(savequeue)) + ". Saving.")
             for i in range(len(result)):      #matrix, set our values and save.
                 count_matrix_array[i].load()
                 count_matrix_array[i].mat[pair[0],pair[1]] = result[i]
@@ -798,16 +918,10 @@ def by_bin(ra, dec, z, pix, zbins=redshift_bins, nside=nside_default):
     
     #Step 2: Ascertain where in the list to return the RA and DEC should go
     indices = to_zbins(z, zbins)
-    
     report("by_bin(): Indices gotten with shape "+str(np.shape(indices))+"\n"+
            "Min: "+str(min(indices))+" and Max: "+str(max(indices)))
+    
     #Step 3: Put the RA and DEC in the appropriate place in the list
-    
-    #This part is really slow for some reason so go ahead and try to improve it
-    
-    #Attempt 2: tried to break the process up into two list construction parts
-    #Doubled speed, but it still takes a few minutes for the test sample :\
-    
     len_list = []
     for z in range(len(zbins)-1):
         inbin = np.where(indices == z)[0]
