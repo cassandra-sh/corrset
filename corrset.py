@@ -19,11 +19,8 @@ import pandas                  as pd
 import healpy                  as hp
 import multiprocessing         as mp
 import matplotlib.pyplot       as plt
-import astroML.correlation     as cr
-from   scipy               import spatial
 from   corruscant          import twopoint
 from   corruscant          import clustering
-from   sklearn.neighbors   import BallTree
 from   sklearn.neighbors   import KDTree
 
 dir_path = "/scr/depot0/csh4/"
@@ -182,6 +179,58 @@ class Corrset:
         if kwargs['corr_now']:
             self.prep_correlation(True)
         
+    def corruscant(self):
+        """
+        Implementation of corrscant courtesy of A. Pellegrino
+        
+        May or may not be significantly faster. Probably is.
+        """
+        #Step 0: Retrieve Data
+        report("corruscant(): Preparing inputs.")
+        ra1, dec1, pix1, z1 = get_cols(self.d1, self.d1_names[:4])
+        ra2, dec2, pix2, z2 = get_cols(self.d2, self.d2_names[:4])
+        ra3, dec3, pix3 = get_cols(self.r, self.r_names[:3])
+            
+        #Step 1: Divide into redshift bins.
+        ra1z, ra2z, dec1z, dec2z = [], [], [], []
+        for z in range(0, (len(self.zbins)-1)):
+            in_zbin1 = np.where(np.logical_and(np.greater(z1, self.zbins[z]),
+                                                np.less(z1, self.zbins[z+1])))[0]
+            
+            in_zbin2 = np.where(np.logical_and(np.greater(z2, self.zbins[z]),
+                                                np.less(z2, self.zbins[z+1])))[0]
+            ra1z.append([ra1[i] for i in in_zbin1])
+            dec1z.append([dec1[i] for i in in_zbin1])
+            ra2z.append([ra2[i] for i in in_zbin2])
+            dec2z.append([dec2[i] for i in in_zbin2])
+        
+        #Step 2: Prepare to pass to Corruscant
+        report("corruscant(): growing trees.")
+        dx,dy,dz=sph2cart(1.0, ra3, dec3, degree=True)
+        dataxyz=np.array([dx,dy,dz]).transpose()
+        rand_tree = clustering.tree(dataxyz)
+        
+        gal_trees = []
+        aa_trees = []
+        for z in range(len(self.zbins)-1):
+            dx,dy,dz=sph2cart(1.0, ra2z[z], dec2z[z], degree=True)
+            dataxyz=np.array([dx,dy,dz]).transpose()
+            gal_trees.append(clustering.tree(dataxyz))
+            
+            dx,dy,dz=sph2cart(1.0, ra1z[z], dec1z[z], degree=True)
+            dataxyz=np.array([dx,dy,dz]).transpose()
+            aa_trees.append(clustering.tree(dataxyz))
+        
+        #Step 3: Pass to Corruscant, redshift bin by redshift bin...
+        results = []
+        for z in range(len(self.zbins)-1):
+            report("corruscant(): Running correlation for z bin " + str(z+1) +
+                   " of " + str(len(self.zbins)-1) + ".")
+            results.append(twopoint.angular.crosscorr(aa_trees[z], gal_trees[z], 
+                                                      rand_tree, rand_tree,
+                                                      self.abins, num_threads=4, 
+                                                      est_type="landy-szalay"))
+        return results
     
     def read_correlation(self, jackknife_pix=range(0, n_pix)):
         """
@@ -587,8 +636,9 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
             tree_array.append(KDTree(np.asarray(ra_dec_to_xyz(ra, dec),
                                             order='F').T))
             n_trees = n_trees + 1
-    report("correlate_zbin(): Just finished growing " + str(n_trees) +
-           " trees corresponding to coords2 shape = " + str(np.shape(coords2)))
+    report("correlate_zbin(): Just finished growing "+str(n_trees)+
+           " trees corresponding to coords2 shape = "+str(np.shape(coords2))+"\n"+
+           "File: " + file)
     
     #2. Make empty count matrices to save results to.
     count_matrix_array = []
@@ -623,17 +673,20 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
     
     #While we have a large number of processes (< n cores) to go, wait for each
     #one to report finished before adding another to the pile
-    report("correlate_zbin(): Starting the " + str(len(processes)) + " job(s)")
+    report("correlate_zbin(): Starting the "+str(len(processes))+" job(s)"+"\n"+
+           "File: "+file)
     global n_cores
     while n_processes_started < turn:
         if n_processes_going < n_cores:
             processes[n_processes_started].start()
             n_processes_started = n_processes_started + 1
+            n_processes_going =  n_processes_started - n_processes_finished
             
             report("correlate_zbin(): Jobs going: "+str(n_processes_going)+"\n"+
                    "Jobs finished: "+str(n_processes_finished)+"\n"+
                    "Jobs started: "+str(n_processes_started)+"\n"+
-                   "Total jobs: " + str(len(processes)))
+                   "Total jobs: " + str(len(processes))+"\n"+
+                   "File: "+file)
         else:
             time.sleep(.05)
         n_processes_finished = fin.value
@@ -644,10 +697,12 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
         process.join()
         n_processes_finished = fin.value
         
-        report("correlate_zbin(): Joining.\nJobs going: "+str(n_processes_going)+"\n"+
-               "Jobs finished: "+str(n_processes_finished)+"\n"+
+        report("correlate_zbin(): Joining.\n"+
+               "Jobs going:   "+str(n_processes_going)+"\n"+
+               "Jobs finished:"+str(n_processes_finished)+"\n"+
                "Jobs started: "+str(n_processes_started)+"\n"+
-               "Total jobs: " + str(len(processes)))
+               "Total jobs:   " + str(len(processes))+"\n"+
+               "File: "+file)
     
 
 def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
@@ -678,7 +733,6 @@ def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
                 count_matrix_array[i].load()
                 count_matrix_array[i].mat[pair[0],pair[1]] = result[i]
                 count_matrix_array[i].save()
-                report("Saving " + count_matrix_array[i].name)
             fin.value = fin.value + 1         #Then report that we have finished
             savequeue.pop(0)                  #and remove our number from the queue
             return                            #finally, return.
@@ -846,5 +900,16 @@ def angular_dist_to_euclidean_dist(D, r=1):
     D_to_use = np.array(D, dtype=float)
     return 2 * r * np.sin(0.5 * D_to_use * np.pi / 180.)
 
+def sph2cart(r, phi, theta, degree=False):
+    if degree:
+        phi = phi * (np.pi/180.)
+        theta = theta * (np.pi/180.)
+    rcos_theta = r * np.cos(theta)
+    x = rcos_theta * np.cos(phi)
+    y = rcos_theta * np.sin(phi)
+    z = r * np.sin(theta)
+    return x, y, z
+
 if __name__ == "__main__":
     main()
+    
