@@ -18,16 +18,19 @@ development goals:
 """
 
 import gc
+import io
 import os
 import sys
 import time
 import psutil
 import qualifier
+import subprocess
 import numpy                   as np
 import pandas                  as pd
 import healpy                  as hp
 import multiprocessing         as mp
 import matplotlib.pyplot       as plt
+import _pickle                 as pickle
 from   corruscant          import twopoint
 from   corruscant          import clustering
 from   sklearn.neighbors   import KDTree
@@ -35,12 +38,15 @@ from   sklearn.neighbors   import KDTree
 """
 File options
 """
-dir_path = "/scr/depot0/csh4/"
+dir_path  = "/scr/depot0/csh4/"
+code_path = '/scr/depot0/csh4/py/codes/ver1/corrset/'
 logfile =  dir_path + "logs/corrset.txt"
 filepref = dir_path + "cats/corrs/corr_"
 p_rand_q = dir_path + "cats/processed/rand_q.hdf5"
 p_agn_q =  dir_path + "cats/processed/agn_q.hdf5"
 p_hsc_q =  dir_path + "cats/processed/hsc_q.hdf5"
+figbin  =  dir_path + "figures/name.pdf"
+mpi_path=  dir_path + "cats/mpi/holder/h"
 
 """
 Bin opetions
@@ -66,15 +72,16 @@ start_time = int(time.time())
 def current_time():
     return (int(time.time()) - start_time)
 def report(report_string):
+    global rep_to_file
     if rep_to_file:
         sys.stdout.flush()
         time = current_time()
-        print("", file=logfile)
-        print("--- corrset reporting ---", file=logfile)
-        print(report_string, file=logfile)
-        print("Time is " + str(time) + " seconds from start. ", end="", file=logfile)
-        print("Memory use is " + str(psutil.virtual_memory().percent) + "%", file=logfile)
-        print("", file=logfile)
+        logfile.write(""+ "\n")
+        logfile.write("--- corrset reporting ---"+ "\n")
+        logfile.write(report_string+ "\n")
+        logfile.write("Time is " + str(time) + " seconds from start. " + "\n")
+        logfile.write("Memory use is " + str(psutil.virtual_memory().percent) + "%"+ "\n")
+        logfile.write(""+ "\n")
         sys.stdout.flush()
         gc.collect()
     else:
@@ -88,11 +95,14 @@ def report(report_string):
         print("")
         sys.stdout.flush()
         gc.collect()
+
         
 """
 Other global things
 """
 n_cores = mp.cpu_count()
+current_jobs = 0
+total_jobs   = 0
 
 #Making a global list of pair-pair combos to run correlations on
 pairs = []
@@ -121,7 +131,7 @@ def main():
     Runs a test cross-correlation on a small data sample. 
     """
     if QUALIFY_AGAIN:
-        qualifier.main()
+        qualifier.main(sparsify=0.33, smallbox=True)
 
     report("First report: datetime = " + time.asctime(time.localtime(time.time())))
     
@@ -151,6 +161,7 @@ def main():
         fig.add_subplot(int("13"+ str(i+1)))
         plt.title(str("z bin " + str(redshift_bins[i]) + ", " + str(redshift_bins[i+1])))
         plt.errorbar(a_bin_middles, corrs[i], yerr=errs[i])
+    fig.savefig(figbin)
     plt.show()
     
     report("Done")
@@ -574,7 +585,7 @@ class Corrset:
             Gets all of the cross-correlation matrices into self.matrices
         """
         report("prep_crosscorrelation(save = " + str(save) + "): Starting...")
-        
+        #FORK BY DATA PAIR
         if 'd1d2' in self.matrices and overwrite == False:
             pass
         else:
@@ -731,14 +742,14 @@ class Corrset:
             mats  = correlate_dat(save=False, load=True, no_z1=no_z1, no_z2=no_z1,
                                   filename=special_r_cat, zbins=self.zbins,
                                   abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2)
+                                  d1=d1, d2=d2, datname=name)
             self.matrices[name] = mats
         
         else:
             mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
                                   filename=(self.filepref+name), zbins=self.zbins,
                                   abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2)
+                                  d1=d1, d2=d2, datname=name)
             self.matrices[name] = mats
 
           
@@ -876,6 +887,7 @@ def correlate_dat( **kwargs):
     zbins = kwargs.get('zbins', np.linspace(0.3, 1.5, num=4))
     abins = kwargs.get('abins', np.logspace(np.log10(.0025), np.log10(1.5), num=12))
     filename = kwargs.get('filename')
+    datname  = kwargs.get('datname')
     
         
     if save == True:
@@ -932,27 +944,80 @@ def correlate_dat( **kwargs):
         report("correlate_dat(): Sorting groups by z bin and pixel")
         group1, len1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
         group2, len2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
-        
+
         #Generate the arguments to the processes
-        n = 0
+        z = 0
         
         report("correlate_dat(): Run the jobs.")
         #Be cognizant of whether or not redshift is being used in a given analysis
         if no_z1 == True and no_z2 == True:
-            correlate_zbin(filename, group1[0], group2[0], n, cart_bins, len1[0], len2[0])
-            n = n + 1
+            correlate_zbin(file = filename,
+                           coords1 = group1[0], coords2 = group2[0],
+                           z = z, bins = cart_bins,
+                           lenra1 = len1[0], lenra2 = len2[0],
+                           name = datname)
+            z = z + 1
         elif no_z1 == True and no_z2 == False:
             for i in range(0, len(group2)):
-                correlate_zbin(filename, group1[0], group2[i], n, cart_bins, len1[0], len2[i])
-                n = n + 1
+                correlate_zbin(file = filename,
+                               coords1 = group1[0], coords2 = group2[i],
+                               lenra1 = len1[0],     lenra2 = len2[i],
+                               z = z, bins = cart_bins, name = datname)
+                z = z + 1
         elif no_z1 == False and no_z2 == True:
             for i in range(0, len(group1)):
-                correlate_zbin(filename, group1[i], group2[0], n, cart_bins, len1[i], len2[0])
-                n = n + 1
+                correlate_zbin(file = filename,
+                               z = z, bins = cart_bins, name = datname,
+                               coords1 = group1[i], coords2 = group2[0],
+                               lenra1 = len1[i],     lenra2 = len2[0])
+                z = z + 1
         else:
             for i in range(0, len(group1)):
-                correlate_zbin(filename, group1[i], group2[i], n, cart_bins, len1[i], len2[i])
-                n = n + 1
+                correlate_zbin(file = filename,
+                               z = z, bins = cart_bins, name = datname,
+                               coords1 = group1[i], coords2 = group2[i],
+                               lenra1 = len1[i],     lenra2 = len2[i])
+                z = z + 1
+        
+        report("Running remaining jobs")
+        run_mpi_jobs()
+
+        report("Prepping count matrices")
+        z = 0
+        count_matrix_array_array = []
+        if no_z1 == True and no_z2 == True:
+            count_matrix_array = []
+            for a in range(len(abins)-1):
+                mat = CountMatrix(filename=(filepref + datname),
+                                  tabname=("bin_" + str(z) + str(a)),
+                                  load=False, save=True)
+                count_matrix_array.append(mat)
+            count_matrix_array_array.append(count_matrix_array)
+            z = z + 1
+        else:
+            for i in range(0, len(group1)):
+                count_matrix_array = []
+                for a in range(len(abins)-1):
+                    mat = CountMatrix(filename=(filepref + datname),
+                                      tabname=("bin_" + str(z) + str(a)),
+                                      load=False, save=True)
+                    count_matrix_array.append(mat)
+                count_matrix_array_array.append(count_matrix_array)
+                z = z + 1
+            
+        report("Now putting the job results together")
+        z = 0
+        global mpi_path
+        if no_z1 == True and no_z2 == True:
+            get_mpi_results(z, datname, filepref, abins, mpi_path,
+                            count_matrix_array_array[0])
+            z = z + 1
+        else:
+            for i in range(0, len(group1)):
+                get_mpi_results(z, datname, filepref, abins, mpi_path,
+                                count_matrix_array_array[z])
+                z = z + 1
+
     
     if load == True:
         #Load relevant metadata
@@ -977,13 +1042,13 @@ def correlate_dat( **kwargs):
         return matrices
     
 
-def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_default):
+def correlate_zbin( **kwargs):
     """    
-    @params
+    @kwargs
     
         file         - the name of the file where the corrset will be saved
         
-        name         - the key to save this corrset to within the file
+        datname      - the key to save this corrset to within the file
         
         coords1, 2   - The coordinates for a given z bin, sorted by healpix. 
                        Must be given in shape (n_pix, 2, *), so it is appropriate
@@ -1003,6 +1068,16 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
                        for each data set
                        
     """
+    file =    kwargs['file']
+    coords1 = kwargs['coords1'] 
+    coords2 = kwargs['coords2'] 
+    z =       kwargs['z'] 
+    bins =    kwargs['bins'] 
+    lenra1 =  kwargs['lenra1'] 
+    lenra2 =  kwargs['lenra2'] 
+    datname = kwargs['name'] 
+    forcejoin = kwargs.get('forcejoin', False)
+    
     #1. Make the KDTrees that will be used for computing the pair counts
     #   Ensure that KDTrees are not made for empty pixels. 
     #   Give a report at the end.
@@ -1018,112 +1093,107 @@ def correlate_zbin(file, coords1, coords2, z, bins, lenra1, lenra2, nside=nside_
             n_trees = n_trees + 1
     report("correlate_zbin(): Just finished growing "+str(n_trees)+
            " trees corresponding to coords2 shape = "+str(np.shape(coords2))+"\n"+
-           "File: " + file)
+           "File: " + file + " \n" +
+           "Generating MPI inputs")
     
-    #2. Make empty count matrices to save results to.
-    count_matrix_array = []
-    for a in range(len(bins)-1):
-        mat = CountMatrix(filename=file, tabname=("bin_" + str(z) + str(a)),
-                          load=False, save=True)
-        count_matrix_array.append(mat)
         
     #3. Generate multiprocessing Processes for running the correlations. 
     #   But if either pixel in each pixel-pixel pair is empty, don't add a job.
     global pairs
-    turn = 0
-    fin = mp.Value('i', 0)
-    save_queue = mp.Manager().list([])
-    processes = []
+    global current_jobs
+    global total_jobs
+    global mpi_path
     for pair in pairs:
         if len(coords1[pair[0]][0]) == 0 or len(coords2[pair[1]][0]) == 0:
             pass
         else:
-            args = (coords1, coords1, pair, tree_array, bins,
-                    count_matrix_array, turn, fin, save_queue,
-                    lenra1, lenra2)
-            processes.append(mp.Process(target=correlate_pixpair, args=args))
-            turn = turn + 1
-                
-    
-    #4. Run the processes.
-    #   Start by doing one process per core, until there are few processes left.
-    n_processes_started = 0
-    n_processes_finished = fin.value
-    n_processes_going =  n_processes_started - n_processes_finished
-    
-    #While we have a large number of processes (< n cores) to go, wait for each
-    #one to report finished before adding another to the pile
-    report("correlate_zbin(): Starting the "+str(len(processes))+" job(s)"+"\n"+
-           "File: "+file)
-    global n_cores
-    while n_processes_started < turn:
-        if n_processes_going < n_cores:
-            processes[n_processes_started].start()
-            n_processes_started = n_processes_started + 1
-            n_processes_finished = fin.value
-            n_processes_going =  n_processes_started - n_processes_finished
+            #i.   Figure out where inputs and outputs for the mpi helper file
+            #     will be saved
+            input_path = str(mpi_path + str(current_jobs))
+            output_path = str(mpi_path + "_" + datname + "_" + str(z) +
+                              "_" + str(pair[0]) + "_" + str(pair[1]) + ".npy")
             
-            report("correlate_zbin(): Jobs going: "+str(n_processes_going)+"\n"+
-                   "Jobs finished: "+str(n_processes_finished)+"\n"+
-                   "Jobs started: "+str(n_processes_started)+"\n"+
-                   "Total jobs: " + str(len(processes))+"\n"+
-                   "File: "+file)
-        else:
-            time.sleep(.05)
-        n_processes_finished = fin.value
-        n_processes_going =  n_processes_started - n_processes_finished
-    
-    #Once we have few jobs to go, wait for them to finish up and get out. 
-    for process in processes:
-        process.join()
-        n_processes_finished = fin.value
+            #ii.  Put together the input for the mpi helper file
+            args = {'coords'  : coords1[pair[0]],
+                    'tree'    : tree_array[pair[1]],
+                    'bins'    : bins,
+                    'lenra2'  : lenra2,       
+                    'lenra1'  : lenra1,
+                    'path'    : output_path}
+            
+            #iii. Use pickle to save the input, indexed by current_jobs, which
+            #     is a stand in for rank
+            f = open(input_path, 'wb')
+            pickle.dump(args, f)
+            f.close()
+            
+            #iv.  Keep track of how many jobs have been prepared
+            current_jobs = current_jobs + 1
+            total_jobs   = total_jobs   + 1
         
-        report("correlate_zbin(): Joining.\n"+
-               "Jobs going:   "+str(n_processes_going)+"\n"+
-               "Jobs finished:"+str(n_processes_finished)+"\n"+
-               "Jobs started: "+str(n_processes_started)+"\n"+
-               "Total jobs:   " + str(len(processes))+"\n"+
-               "File: "+file)
+        #v.  If we've reached the number of cores, run the jobs, thus allowing
+        #    for more jobs to be prepared
+        if current_jobs == n_cores-1:
+            run_mpi_jobs()
     
+    #vi.  If the user specifies, join all remaining jobs. 
+    if forcejoin:
+        run_mpi_jobs()
 
-def correlate_pixpair(coords1, coords2, pair, tree_array, bins,
-                      count_matrix_array, turn, fin, savequeue,
-                      lenra1, lenra2):
+    report("Ran a total of " + str(total_jobs) + " jobs.")
+
+def run_mpi_jobs():
     """
-    subjob() runs the correlations, waits for its turn to save, and saves. 
+    mpi4py implementation for multiprocessing.
     
-    I'm trying out a queueing saving system. Once done with computing its result
-    each subjob will add its turn number to the savequeue and then wait until
-    its number is at the front of the queue. In theory this means that there is
-    no pileup and one long time calculation can work in peace while the shorter
-    ones go ahead. 
+    Runs all the jobs, waits for them to return.
     """
-    result = two_point_angular_corr_part(coords1[pair[0]][0],
-                                                 coords1[pair[0]][1],
-                                                 tree_array[pair[1]], bins)
-    result = np.array(np.diff(result), dtype=float)/(lenra1*lenra2)
+    global current_jobs
+    global code_path
+    helper = code_path + 'corrset_mpi_helper.py'
+    cmd = "mpiexec -n " + str(current_jobs) + " python " + helper
+    report("Running " + str(current_jobs) + " jobs. \n" +
+           "popen command is as follows: " + cmd)
+    
+    
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    
+    wrapper = io.TextIOWrapper(process.stdout, encoding="utf-8")
+    
+    jobs_finished = 0
+    while jobs_finished < current_jobs:
+        for line in wrapper:  
+            print("mpi_out_f"+str(jobs_finished)+": "+line, end="")
+            if "code:exit" in line:                    
+                jobs_finished = jobs_finished+1       
+        process.wait()
+    
+    report("Ran " + str(current_jobs) + " jobs.")
+    current_jobs = 0
+
+       
+def get_mpi_results(z, datname, filepref, bins, mpi_path, count_matrix_array):
+    """
+    mpi4py implementation for multiprocessing.
+    """
+    #i.  Go through each valid pixel-pixel pair
+    global pairs
+    for pair in pairs:
+        #ii.  Figure out what the MPI output name would be
+        output_path = str(mpi_path + "_" + datname + "_" + str(z) +
+                          "_" + str(pair[0]) + "_" + str(pair[1]) + ".npy")
         
-    
-    savequeue.append(turn)                    #With result, ready to save. Add 
-                                              #our turn number to the savequeue
-    returned = False
-    while not returned:
-        current_turn = savequeue[0]           #Now see whose turn it is.
-        if current_turn == turn:              #If it is our turn, load the
-            report("correlate_pixpair(): Reached turn " + str(turn) + " \n" +
-                   "Savequeue is length " + str(len(savequeue)) + ". Saving.")
-            for i in range(len(result)):      #matrix, set our values and save.
-                count_matrix_array[i].load()
-                count_matrix_array[i].mat[pair[0],pair[1]] = result[i]
-                count_matrix_array[i].save()
-            fin.value = fin.value + 1         #Then report that we have finished
-            savequeue.pop(0)                  #and remove our number from the queue
-            return                            #finally, return.
-        else:
-            time.sleep(.05)                   #If it isn't our turn, wait and
-                                              #check again.
+        #iii. Check if there is an output file
+        if os.path.isfile(output_path): 
             
-    
+            #iv.  If there is, load it and add it to the count matrix array
+            output_data = np.load(output_path)
+            for a in range(len(bins)-1):
+                count_matrix_array[a].mat[pair[0], pair[1]] = output_data[a]
+                
+    #v.  Save the results
+    for a in range(len(bins)-1):
+        count_matrix_array[a].save()    
     
 def two_point_angular_corr_part(ra1, dec1, tree2, bins):
     """
