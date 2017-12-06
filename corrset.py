@@ -18,22 +18,23 @@ development goals:
 """
 
 import gc
-import io
 import os
 import sys
 import time
 import psutil
+import shutil
 import qualifier
-import subprocess
 import numpy                   as np
 import pandas                  as pd
 import healpy                  as hp
-import multiprocessing         as mp
 import matplotlib.pyplot       as plt
 import _pickle                 as pickle
 from   corruscant          import twopoint
 from   corruscant          import clustering
 from   sklearn.neighbors   import KDTree
+
+#import subprocess
+#import io
 
 """
 File options
@@ -44,9 +45,13 @@ logfile =  dir_path + "logs/corrset.txt"
 filepref = dir_path + "cats/corrs/corr_"
 p_rand_q = dir_path + "cats/processed/rand_q.hdf5"
 p_agn_q =  dir_path + "cats/processed/agn_q.hdf5"
+p_agn1_q =  dir_path + "cats/processed/agn1_q.hdf5"
+p_agn2_q =  dir_path + "cats/processed/agn2_q.hdf5"
 p_hsc_q =  dir_path + "cats/processed/hsc_q.hdf5"
 figbin  =  dir_path + "figures/name.pdf"
-mpi_path=  dir_path + "cats/mpi/holder/h"
+
+jobdir = dir_path + "cats/mpi/jobs/"
+outdir = dir_path + "cats/mpi/outs/"
 
 """
 Bin opetions
@@ -55,52 +60,30 @@ nside_default = 8
 angular_bins  = np.logspace(np.log10(.0025), np.log10(1.5), num=12)
 redshift_bins = np.linspace(0.3, 1.5, num=4)
 
-"""
-Program options
-"""
-CROSS_CORRELATE_AGAIN = True
-QUALIFY_AGAIN = True
-rep_to_file = False
 
 """
 Log Functions
 """
-if rep_to_file:
-    logfile = open(logfile, "a")
 start_time = int(time.time())
 #Defining a couple in-method helper functions
 def current_time():
     return (int(time.time()) - start_time)
 def report(report_string):
-    global rep_to_file
-    if rep_to_file:
-        sys.stdout.flush()
-        time = current_time()
-        logfile.write(""+ "\n")
-        logfile.write("--- corrset reporting ---"+ "\n")
-        logfile.write(report_string+ "\n")
-        logfile.write("Time is " + str(time) + " seconds from start. " + "\n")
-        logfile.write("Memory use is " + str(psutil.virtual_memory().percent) + "%"+ "\n")
-        logfile.write(""+ "\n")
-        sys.stdout.flush()
-        gc.collect()
-    else:
-        sys.stdout.flush()
-        time = current_time()
-        print("")
-        print("--- corrset reporting ---")
-        print(report_string)
-        print("Time is " + str(time) + " seconds from start. ", end="")
-        print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
-        print("")
-        sys.stdout.flush()
-        gc.collect()
+    sys.stdout.flush()
+    time = current_time()
+    print("")
+    print("--- corrset reporting ---")
+    print(report_string)
+    print("Time is " + str(time) + " seconds from start. ", end="")
+    print("Memory use is " + str(psutil.virtual_memory().percent) + "%")
+    print("")
+    sys.stdout.flush()
+    gc.collect()
 
         
 """
 Other global things
 """
-n_cores = mp.cpu_count()
 current_jobs = 0
 total_jobs   = 0
 
@@ -123,51 +106,201 @@ for i in range(n_pix):
             pass
         else:
             pairs.append(pair_to_add)
-    
-
 
 def main():
     """
-    Runs a test cross-correlation on a small data sample. 
+    Prepare the standard correlations
+    
+    1. T1 AGN-Galaxy cross-correlation
+    2. T2 AGN-Galaxy cross-correlation
+    3. Galaxy-Galaxy auto-correlation
     """
-    if QUALIFY_AGAIN:
-        qualifier.main(sparsify=0.33, smallbox=True)
+    
+    """
+    Program options
+    """
+    
+    QUALIFY_AGAIN = False
+    
+    PART_1 = True
+    PART_2 = False
+    
+    """
+    Step 0. Start the program.
+    """
 
-    report("First report: datetime = " + time.asctime(time.localtime(time.time())))
+    report("corrset_mpi.py main() with part_1 = " + str(PART_1) +
+           " and part_2 = " + str(PART_2) + ". Time is " +
+           time.asctime(time.localtime(time.time())))
     
-    report("Starting correlation process")
+    """
+    Step 1. Initialize the corrsets, without running any computations yet.
+    """
+    report("Initializing corrsets")
     
-    corrset = Corrset(filepref=filepref, 
+    #i.   T1 AGN-Galaxy CC
+    t1g     = Corrset(filepref=filepref, name='t1g', jobdir=jobdir,
+                      d1=p_agn1_q, d2=p_hsc_q, r=p_rand_q, 
+                      zbins=redshift_bins, abins = angular_bins,
+                      d1names = ['ra', 'dec', 'pix', 'redshift'],
+                      d2names = ['ra', 'dec', 'pix', 'redshift'],
+                      rnames  = ['ra', 'dec', 'pix'])
+    
+    #ii.  T2 AGN-Galaxy CC
+    t2g     = Corrset(filepref=filepref, name='t2g', jobdir=jobdir,
+                      d1=p_agn2_q, d2=p_hsc_q, r=p_rand_q, 
+                      zbins=redshift_bins, abins = angular_bins,
+                      d1names = ['ra', 'dec', 'pix', 'redshift'],
+                      d2names = ['ra', 'dec', 'pix', 'redshift'],
+                      rnames  = ['ra', 'dec', 'pix'],
+                      gifts_available = True,
+                      gift = ['d2r', 'rr'],
+                      gift_path = {"d2r":(filepref+"t1g"),
+                                   "rr":(filepref+"t1g")},
+                      giftor = {'d2r':'t1g', 'rr':'t1g'}, 
+                      g_colnames = {'d2r':['ra', 'dec', 'pix', 'redshift'],
+                                     'rr':['ra', 'dec', 'pix']})
+
+    #iii. All AGN-Galaxy CC
+    tag     = Corrset(filepref=filepref, name='tag', jobdir=jobdir,
                       d1=p_agn_q, d2=p_hsc_q, r=p_rand_q, 
                       zbins=redshift_bins, abins = angular_bins,
                       d1names = ['ra', 'dec', 'pix', 'redshift'],
                       d2names = ['ra', 'dec', 'pix', 'redshift'],
                       rnames  = ['ra', 'dec', 'pix'],
-                      crosscorr_now = CROSS_CORRELATE_AGAIN)
+                      gifts_available = True,
+                      gift = ['d2r', 'rr'],
+                      gift_path = {"d2r":(filepref+"t1g"),
+                                   "rr":(filepref+"t1g")},
+                      giftor = {'d2r':'t1g', 'rr':'t1g'}, 
+                      g_colnames = {'d2r':['ra', 'dec', 'pix', 'redshift'],
+                                     'rr':['ra', 'dec', 'pix']})
     
-    corrset.prep_crosscorrelation(save=False)
     
-    report("Finished generating/loading correlation. Now reading results")
+    #iv.  Galaxy-Galaxy AC
+    gg      = Corrset(filepref=filepref, name='gg', jobdir=jobdir,
+                      d1=p_hsc_q, r=p_rand_q, 
+                      zbins=redshift_bins, abins = angular_bins,
+                      d1names = ['ra', 'dec', 'pix', 'redshift'],
+                      rnames  = ['ra', 'dec', 'pix'],
+                      gifts_available = True,
+                      gift = ['d1r', 'rr'],
+                      gift_path = {"d1r":(filepref+"t1g"),
+                                   "rr":(filepref+"t1g")},
+                      giftor = {'d1r':'t1g', 'rr':'t1g'},
+                      gift_names_map = {"d1r":"d2r", "rr":"rr"}, 
+                      g_colnames = {'d2r':['ra', 'dec', 'pix', 'redshift'],
+                                     'rr':['ra', 'dec', 'pix']})
+        
+    if PART_1:
+        """
+        Step 2. Prepare the catalogs, if necessary. Send this job to qualifier.py
+        """
+        if QUALIFY_AGAIN:
+            report("Qualifying the catalogs.")
+            qualifier.main(sparsify=0.666, smallbox=False)
     
-    corrs, errs = corrset.read_crosscorrelation()
-    a_bin_middles = (angular_bins[1:] + angular_bins[:-1]) / 2
+        """
+        Step 3. Prepare all the jobs
+        """
+        report("Preparing Correlation jobs for processing")
+        
+        #Clear the job directory
+        try:
+            shutil.rmtree(jobdir)
+        except FileNotFoundError:
+            pass
+        os.makedirs(jobdir)
+        
+        #Generate jobs
+        tag.prep_crosscorrelation(part_1=True)
+        t1g.prep_crosscorrelation(part_1=True)
+        t2g.prep_crosscorrelation(part_1=True)
+        gg.prep_autocorrelation(part_1  =True)
+        
+        pickle.dump({'total_jobs':current_jobs}, open(jobdir+"jj", 'wb'))
+        
+        """
+        Step 4. Read out job parameters
+        """
+        report("Jobs are ready. Parameters follow.")
+        
+        n_files = len([n for n in os.listdir(jobdir) if os.path.isfile(n)])
+        
+        print("Jobs prepared: " + str(current_jobs))        
+        print("Files in " + jobdir + " = " + str(n_files))
+        print("Diagnostic by corrset:")
+        tag.print_diagnostic()
+        t1g.print_diagnostic()
+        t2g.print_diagnostic()
+        gg.print_diagnostic()
     
-    print(corrs)
-    print(errs)
+    """
+    Step 5. Move the jobs to Tiger and process them. Bring the results back.
+    """
+    #User side
     
-    report("Finished reading results. Plotting")
     
-    fig = plt.figure()
-    for i in range(0, len(redshift_bins)-1):
-        report("z bin "+str(redshift_bins[i])+", "+str(redshift_bins[i+1])+"\n"+
-               "corrs = "+str(corrs[i])+" \nerrs = "+str(errs[i]))
-        fig.add_subplot(int("13"+ str(i+1)))
-        plt.title(str("z bin " + str(redshift_bins[i]) + ", " + str(redshift_bins[i+1])))
-        plt.errorbar(a_bin_middles, corrs[i], yerr=errs[i])
-    fig.savefig(figbin)
-    plt.show()
-    
-    report("Done")
+    if PART_2:
+        """
+        Step 6. Read the jobs.
+        """
+        report("Loading correlation information from job results")
+        
+        tag.prep_crosscorrelation(part_2=True)
+        t1g.prep_crosscorrelation(part_2=True)
+        t2g.prep_crosscorrelation(part_2=True)
+        gg.prep_autocorrelation(part_2  =True)
+        
+        tag_corrs, tag_errs = t1g.read_crosscorrelation()
+        t1g_corrs, t1g_errs = t1g.read_crosscorrelation()
+        t2g_corrs, t2g_errs = t2g.read_crosscorrelation()
+        gg_corrs,  gg_errs  = gg.read_crosscorrelation()
+        
+        results_dct = {'tag_corrs':tag_corrs, 'tag_errs':tag_errs,
+                       't1g_corrs':t1g_corrs, 't1g_errs':t1g_errs,
+                       't2g_corrs':t2g_corrs, 't2g_errs':t2g_errs,
+                       'gg_corrs':gg_corrs,   'gg_errs':gg_errs}
+        
+        pickle.dump(results_dct, open((filepref+"results.pickle"), mode='wb'))
+        
+        report("Results via dictionary are as follows.")
+        print(results_dct)
+        
+        """
+        Step 7. Plot everything. Save the figures. Save the values. 
+        """
+        report("Plotting.")
+        
+        a_bin_middles = (angular_bins[1:] + angular_bins[:-1]) / 2
+        report("Finished reading results. Plotting")
+        
+        fig = plt.figure()
+        for i in range(0, len(redshift_bins)-1):
+            fig.add_subplot(int("13"+ str(i+1)))
+            plt.title(str("z bin " + str(redshift_bins[i]) + ", " + str(redshift_bins[i+1])))
+            plt.errorbar(a_bin_middles, t1g_corrs[i], yerr=t1g_errs[i],
+                         xerr=[a_bin_middles-angular_bins[:-1],
+                               angular_bins[1:]-a_bin_middles],
+                         color="blue", label="t1g", fmt='o')
+            plt.errorbar(a_bin_middles, tag_corrs[i], yerr=tag_errs[i],
+                         xerr=[a_bin_middles-angular_bins[:-1],
+                               angular_bins[1:]-a_bin_middles],
+                         color="black", label="tag", fmt='^')
+            plt.errorbar(a_bin_middles, t2g_corrs[i], yerr=t2g_errs[i],
+                         xerr=[a_bin_middles-angular_bins[:-1],
+                               angular_bins[1:]-a_bin_middles],
+                         color="red", label="t2g", fmt='1')
+            plt.errorbar(a_bin_middles, gg_corrs[i],  yerr=gg_errs[i],
+                         xerr=[a_bin_middles-angular_bins[:-1],
+                               angular_bins[1:]-a_bin_middles],
+                         color="green", label="gg", fmt='D')
+        plt.legend()
+        fig.savefig(figbin)
+        plt.show()
+        
+    report("Finished corrset_mpi.py main() with part_1 = " +
+           str(PART_1) + " and part_2 = " + str(PART_2) + ".")
 
 
 class Corrset:
@@ -199,6 +332,9 @@ class Corrset:
             filepref     -- prefix of the files in which to save the cross 
                             correlation hdfs
             
+            name         -- Name of the correlation being done. Goes into the 
+                            file names
+            
             d1, d2, r    -- file locations of hdfs containing d1, d2, and r for
                             the cross correlation
             
@@ -208,23 +344,60 @@ class Corrset:
             
             zbins, abins -- the redshift and angular bins to use in the analysis
             
-            corr_now     -- If True, run the correlation right now and save.
+            jobdir       -- Where the jobs to run will be saved. 
+            
+            gifts_available -- Whether or not to use correlations from another's
+                               directory, to save time. If true, provide the 
+                               following. 
+                               Provide the following if gifts_available is True.
+            gift            -- Which gifts to use. list containing any of
+                               ['d1d2', 'd1r', 'd2r', 'rr']
+            gift_path       -- Dict of partial file paths where the gifts are
+                               stored. Should be of the form filepref+name but
+                               for a different corrset. Length = gift. 
+                               Format is thus {"rr":"path/to/rr/correst"}
+            g_colnames      -- Dictionary of column names indexed by gift. I.e.
+                               {'rr':['ra', 'dec', 'pix']}
+            giftor          -- Dictionary of gift giver names. I.e. {'rr':'t1g'}
+            gift_names_map  -- Dictionary of gift type to gift name (as stored
+                               as in the gift path). Example is {"d1r":"d2r"},
+                               in the case where you want to use another file's
+                               'd2r' as your 'd1r'. This is an OPTIONAL
+                               parameter, and will be used if you provide it.
+                               Length must correspond to gift. If not provided,
+                               names are assumed to be the same as in gift
+            
             
         """
         self.filepref = kwargs['filepref']
         self.d1       = kwargs['d1']
-        self.d2       = kwargs['d2']
         self.r        = kwargs['r']
         self.zbins    = kwargs['zbins']
         self.abins    = kwargs['abins']
         self.d1_names = kwargs['d1names']
-        self.d2_names = kwargs['d2names']
         self.r_names  = kwargs['rnames']
-        
+        self.name     = kwargs['name']
         self.matrices = {}
         
-        if kwargs['crosscorr_now']:
-            self.prep_crosscorrelation(True)
+        
+        try:  #May be an autocorr only (as in no d2 provided)
+            self.d2       = kwargs['d2']
+            self.d2_names = kwargs['d2names']
+        except KeyError as e:
+            pass
+        
+        self.g_avail = kwargs.get('gifts_available', False)
+        if self.g_avail:
+            self.g_list =     kwargs['gift']
+            self.g_paths =    kwargs['gift_path']
+            self.g_colnames = kwargs['g_colnames']
+            self.giftor     = kwargs['giftor']
+            self.g_map = kwargs.get('gift_names_map', {})
+            
+        
+    def print_diagnostic(self):
+        #Print name, number of jobs, number of objects, file locations, etc. 
+        pass
         
     def corruscant(self):
         """
@@ -564,8 +737,7 @@ class Corrset:
         pass
     
     
-    def prep_crosscorrelation(self, save, special_r = False, overwrite=True, 
-                              special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
+    def prep_crosscorrelation(self, part_1 = False, part_2 = False):
         """
         CROSS-CORRELATION
         
@@ -573,208 +745,128 @@ class Corrset:
         read_crosscorrelation. If a matrix is already
         
         @params
-            save - whether or not to generate new correlations (True) or load
-                   an already calculated one.
-                   
-            overwrite - if there are already matrices under the correct names
-                        prep_crosscorrelation will only re-compute correlations
-                        if overwrite == True
+            part_1 -- Run the first part of the correlation (generating jobs for
+                      an MPI computing cluster implementation)
             
-            special_r     - Set True if counting RR if RR has been computed before
-            special_r_cat - The name of the file where the old RR is stored
-                            Using special_r forces save to be False
+            part_2 -- Load the results of the jobs. 
         
         @results
             Gets all of the cross-correlation matrices into self.matrices
         """
-        report("prep_crosscorrelation(save = " + str(save) + "): Starting...")
+        report("Starting prep_crosscorrelation(part_1 = " + str(part_1) +
+                                      " and part_2 = " + str(part_2) + ")")
         
         # Generate the MPI jobs
-        if save:            
-            if not ('d1d2' in self.matrices and overwrite == False):
-                report("d1d2")
-                self.pair_count(save, self.d1, self.d2, False, False,
-                                'd1d2', self.d1_names, self.d2_names,
-                                part1= True, part2 = False)
-            if not ('d1r' in self.matrices and overwrite == False):
-                report("d1r")
-                self.pair_count(save, self.d1,  self.r, False,  True,
-                                'd1r',  self.d1_names,  self.r_names,
-                                part1= True, part2 = False)
-            if not ('d2r' in self.matrices and overwrite == False):
-                report("d2r")
-                self.pair_count(save, self.d2,  self.r, False,  True,
-                                'd2r',  self.d2_names,  self.r_names,
-                                part1= True, part2 = False)
-            if not ('rr' in self.matrices and overwrite == False):
-                report("rr")
-                self.pair_count(save,  self.r,  self.r,  True,  True,
-                                'rr',   self.r_names,   self.r_names,
-                                special_r = special_r, 
-                                special_r_cat = special_r_cat,
-                                part1= True, part2 = False)
-        
-        # Run them
-        global current_jobs
-        if current_jobs > 0:
-            report("Running jobs")
-            run_mpi_jobs()
-        
-        
-        #Save the results
-        report("Pulling results")   
-        if not ('d1d2' in self.matrices and overwrite == False):
+        if part_1:            
             report("d1d2")
-            self.pair_count(save, self.d1, self.d2, False, False,
+            self.pair_count(True, self.d1, self.d2, False, False,
+                            'd1d2', self.d1_names, self.d2_names,
+                            part1= True, part2 = False)
+            report("d1r")
+            self.pair_count(True, self.d1,  self.r, False,  True,
+                            'd1r',  self.d1_names,  self.r_names,
+                            part1= True, part2 = False)
+            report("d2r")
+            self.pair_count(True, self.d2,  self.r, False,  True,
+                            'd2r',  self.d2_names,  self.r_names,
+                            part1= True, part2 = False)
+            report("rr")
+            self.pair_count(True,  self.r,  self.r,  True,  True,
+                            'rr',   self.r_names,   self.r_names,
+                            part1= True, part2 = False)
+
+        #Pull out the results
+        elif part_2:
+            report("d1d2")
+            self.pair_count(False, self.d1, self.d2, False, False,
                             'd1d2', self.d1_names, self.d2_names,
                             part1= False, part2 = True)
-        
-        if not ('d1r' in self.matrices and overwrite == False):
             report("d1r")
-            self.pair_count(save, self.d1,  self.r, False,  True,
+            self.pair_count(False, self.d1,  self.r, False,  True,
                             'd1r',  self.d1_names,  self.r_names,
                             part1= False, part2 = True)
-        
-        if not ('d2r' in self.matrices and overwrite == False):
             report("d2r")
-            self.pair_count(save, self.d2,  self.r, False,  True,
+            self.pair_count(False, self.d2,  self.r, False,  True,
                             'd2r',  self.d2_names,  self.r_names,
                             part1= False, part2 = True)
-        
-        if not ('rr' in self.matrices and overwrite == False):
             report("rr")
-            self.pair_count(save,  self.r,  self.r,  True,  True,
+            self.pair_count(False,  self.r,  self.r,  True,  True,
                             'rr',   self.r_names,   self.r_names,
-                            special_r = special_r, 
-                            special_r_cat = special_r_cat,
                             part1= False, part2 = True)
             
-        report("prep_crosscorrelation(save = " + str(save) + "): done")
+        report("prep_crosscorrelation(part_1 = " + str(part_1) +
+               " and part_2 = " + str(part_2) + ") is finished.")
     
-    def prep_autocorrelation(self, save, d="d1", special_r = False, overwrite=False,
-                             special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):    
+    def prep_autocorrelation(self, part_1 = False, part_2 = False, d='d1'):    
         """
         AUTOCORRELATION
         
         As prep_crosscorrelation, but for an autocorrelation 
         
         @params
-            save - whether or not to generate new correlations (True) or load
-                   an already calculated one.
+            d      -- The data set to run the autocorrelation on.
+                      Default is 'd1', but can also be 'd2'
+
+            part_1 -- Run the first part of the correlation (generating jobs for
+                      an MPI computing cluster implementation)
             
-            d    - the data set to run the autocorrelation on. Can be 'd1' or 'd2'
-                   
-            overwrite - if there are already matrices under the correct names
-                        prep_crosscorrelation will only re-compute correlations
-                        if overwrite == True
-            
-            special_r     - Set True if counting RR if RR has been computed before
-            special_r_cat - The name of the file where the old RR is stored
-                            Using special_r forces save to be False
+            part_2 -- Load the results of the jobs. 
         
         @results
             Gets all of the cross-correlation matrices into self.matrices
         """
-        report("prep_autocorrelation(save = " + str(save) + "): Starting...")
+        report("Starting prep_autocorrelation(part_1 = " + str(part_1) +
+                                      " and part_2 = " + str(part_2) + ")")
         
-        # First part of the correlation prep generates jobs to be sent to mpi
-        if save:
-            if d == "d1":
-                if not ('d1d1' in self.matrices and overwrite == False):
-                    report("d1d1")
-                    self.pair_count(save, self.d1, self.d1, False, False,
-                                    'd1d1', self.d1_names, self.d1_names,
-                                    part1= True, part2 = False)
-                if not ('d1r' in self.matrices and overwrite == False):
-                    report("d1r")
-                    self.pair_count(save, self.d1,  self.r, False,  True,
-                                    'd1r',  self.d1_names,  self.r_names,
-                                    part1= True, part2 = False)
-                if not ('rr' in self.matrices and overwrite == False):
-                    report("rr")
-                    self.pair_count(save,  self.r,  self.r,  True,  True,
-                                    'rr',   self.r_names,   self.r_names,
-                                    special_r = special_r, 
-                                    special_r_cat = special_r_cat,
-                                    part1= True, part2 = False)
-            elif d == "d2":
-                if not ('d2d2' in self.matrices and overwrite == False):
-                    report("d2d2")
-                    self.pair_count(save, self.d2, self.d2, False, False,
-                                    'd2d2', self.d2_names, self.d2_names,
-                                    part1= True, part2 = False)
-                
-                if not ('d2r' in self.matrices and overwrite == False):
-                    report("d2r")
-                    self.pair_count(save, self.d2,  self.r, False,  True,
-                                    'd2r',  self.d2_names,  self.r_names,
-                                    part1= True, part2 = False)
-                
-                if not ('rr' in self.matrices and overwrite == False):
-                    report("rr")
-                    self.pair_count(save,  self.r,  self.r,  True,  True,
-                                    'rr',   self.r_names,   self.r_names,
-                                    special_r = special_r, 
-                                    special_r_cat = special_r_cat,
-                                    part1= True, part2 = False)
-            else: 
-                raise ValueError((str(d) + " is not 'd1' or 'd2'"))
+        #Get the right dataset for the autocorrelation. D1 or D2
+        d_use = 0
+        d_use_names = 0
+        if d == 'd1':
+            d_use = self.d1
+            d_use_names = self.d1_names
+        elif d == 'd2':
+            d_use = self.d2
+            d_use_names = self.d2_names
+        else:
+            raise ValueError(d + " is not a valid d for prep_autocorrelation. "+
+                             "Must be 'd1' or 'd2'")
+        
+        # Generate the MPI jobs
+        if part_1:            
+            report(d+d)
+            self.pair_count(True, d_use, d_use, False, False,
+                            d+d, self.d_use_names, self.d_use_names,
+                            part1= True, part2 = False)
+            report(d+"r")
+            self.pair_count(True, self.d_use,  self.r, False,  True,
+                            (d+'r'),  self.d_use_names,  self.r_names,
+                            part1= True, part2 = False)
+            report("rr")
+            self.pair_count(True,  self.r,  self.r,  True,  True,
+                            'rr',   self.r_names,   self.r_names,
+                            part1= True, part2 = False)
+
+        #Pull out the results
+        elif part_2:
+            report(d+d)
+            self.pair_count(True, d_use, d_use, False, False,
+                            d+d, self.d_use_names, self.d_use_names,
+                            part1= False, part2 = True)
+            report(d+"r")
+            self.pair_count(True, self.d_use,  self.r, False,  True,
+                            (d+'r'),  self.d_use_names, self.r_names,
+                            part1= False, part2 = True)
+            report("rr")
+            self.pair_count(True,  self.r,  self.r,  True,  True,
+                            'rr',   self.r_names,  self.r_names,
+                            part1= False, part2 = True)
             
-        # Then we run the jobs
-        global current_jobs
-        if current_jobs > 0:
-            report("Running jobs")
-            run_mpi_jobs()
-            
-            
-        # And then we save the results    
-        if d == "d1":
-            if not ('d1d1' in self.matrices and overwrite == False):
-                report("d1d1")
-                self.pair_count(save, self.d1, self.d1, False, False,
-                                'd1d1', self.d1_names, self.d1_names,
-                                part1= False, part2 = True)
-            if not ('d1r' in self.matrices and overwrite == False):
-                report("d1r")
-                self.pair_count(save, self.d1,  self.r, False,  True,
-                                'd1r',  self.d1_names,  self.r_names,
-                                part1= False, part2 = True)
-            if not ('rr' in self.matrices and overwrite == False):
-                report("rr")
-                self.pair_count(save,  self.r,  self.r,  True,  True,
-                                'rr',   self.r_names,   self.r_names,
-                                special_r = special_r, 
-                                special_r_cat = special_r_cat,
-                                part1= False, part2 = True)
-        elif d == "d2":
-            if not ('d2d2' in self.matrices and overwrite == False):
-                report("d2d2")
-                self.pair_count(save, self.d2, self.d2, False, False,
-                                'd2d2', self.d2_names, self.d2_names,
-                                part1= False, part2 = True)
-            
-            if not ('d2r' in self.matrices and overwrite == False):
-                report("d2r")
-                self.pair_count(save, self.d2,  self.r, False,  True,
-                                'd2r',  self.d2_names,  self.r_names,
-                                part1= False, part2 = True)
-            
-            if not ('rr' in self.matrices and overwrite == False):
-                report("rr")
-                self.pair_count(save,  self.r,  self.r,  True,  True,
-                                'rr',   self.r_names,   self.r_names,
-                                special_r = special_r, 
-                                special_r_cat = special_r_cat,
-                                part1= False, part2 = True)
-        else: 
-            raise ValueError((str(d) + " is not 'd1' or 'd2'"))
-                
-        report("prep_autocrosscorrelation(save = " + str(save) + "):done")
+        report("prep_autocorrelation(part_1 = " + str(part_1) +
+               " and part_2 = " + str(part_2) + ") is finished.")
         
     
-    def pair_count(self, save, d1, d2, no_z1, no_z2, name, colnames1, colnames2,
-                   part1, part2, special_r = False,
-                   special_r_cat = '/scr/depot0/csh4/cats/corrs/corr_rr'):
+    def pair_count(self, save, d1, d2, no_z1, no_z2, datname, colnames1, colnames2,
+                   part1, part2):
         """
         Does the pair counting in a smart parallelized way
         
@@ -797,34 +889,61 @@ class Corrset:
             matrices of shape = ((len(z_bins)-1 or 1 (for no_z1 or 2 = True)), 
                                  len(a_bins)-1, n_pix, n_pix)
         """
-        if save and part1:
-            try:
-                os.remove(self.filepref+name)
-            except FileNotFoundError:
+        
+        #GIFT IMPLEMENTATION GOES HERE
+        #If we have a gift, we only need to load, not save. But we need to 
+        #load from the different corrset. 
+        
+        if part1:
+            
+            #check to see if what we're running is available as a gift
+            if self.g_avail and (datname in self.g_list):
                 pass
-        
-        if special_r:
-            mats  = correlate_dat(save=False, load=True, no_z1=no_z1, no_z2=no_z1,
-                                  filename=special_r_cat, zbins=self.zbins,
-                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2, datname=name, part1=part1, part2=part2)
-            if part2:
-                self.matrices[name] = mats
-        
-        else:
-            mats  = correlate_dat(save=save, load=True, no_z1=no_z1, no_z2=no_z2,
-                                  filename=(self.filepref+name), zbins=self.zbins,
-                                  abins=self.abins, colnames1 = colnames1, colnames2=colnames2,
-                                  d1=d1, d2=d2, datname=name, part1=part1, part2=part2)
-            if part2:
-                self.matrices[name] = mats
-                print(mats)
-                for name in mats:
-                    print(name)
-                    print("name = " + mats[name].name)
-                    print("file = " + mats[name].file)
-                    print("sum  = " + str(np.sum(mats[name].mat)))
-
+                
+            #if not, make the jobs
+            else:
+                mats  = correlate_dat(no_z1=no_z1, no_z2=no_z2,
+                                      filename=(self.filepref+self.name +
+                                                "_" + datname),
+                                      jobstring=(self.name + "_" + datname),
+                                      zbins=self.zbins, abins=self.abins,
+                                      colnames1 = colnames1,
+                                      colnames2 = colnames2,
+                                      d1=d1, d2=d2, datname=datname,
+                                      part1=True, part2=False)
+            
+            
+        if part2:
+            #check to see if what we're running is available as a gift
+            if self.g_avail and (datname in self.g_list):
+                #If it is, figure out the name and file path...
+                name_to_use = datname
+                giftorname = self.giftor[datname]
+                filepath = self.g_paths[datname]
+                if self.g_map != {}:
+                    name_to_use = self.g_map[datname]
+                    
+                
+                mats  = correlate_dat(no_z1=no_z1, no_z2=no_z2,
+                                      filename=(filepath+"_"+name_to_use),
+                                      jobstring=(giftorname+"_"+datname),
+                                      zbins=self.zbins, abins=self.abins,
+                                      colnames1 = colnames1, colnames2=colnames2,
+                                      d1=d1, d2=d2, datname=name_to_use,
+                                      part1=False, part2=True)
+                self.matrices[datname] = mats
+                
+                
+            else:
+                mats  = correlate_dat(no_z1=no_z1, no_z2=no_z2,
+                                      filename=(self.filepref+self.name +
+                                                "_" + datname),
+                                      jobstring=(self.name + "_" + datname),
+                                      zbins=self.zbins, abins=self.abins,
+                                      colnames1 = colnames1, colnames2=colnames2,
+                                      d1=d1, d2=d2, datname=datname,
+                                      part1=False, part2=True)
+                self.matrices[datname] = mats
           
     def check_rowcol_sum(self, matrix, index_list):    
         """
@@ -906,15 +1025,11 @@ class CountMatrix:
             self.load()
             
     def load(self):
-        print("Loading count matrix named " + self.name + " at " +  self.file)
-        sys.stdout.flush()
         #Load the hdf matrix from the filename and hdf table tabname
         df = pd.read_hdf(self.file, key=self.name)
         self.mat = df.as_matrix().astype(float)
     
     def save(self):
-        print("Saving count matrix named " + self.name + " at " +  self.file)
-        sys.stdout.flush()
         #Save the hdf matrix to the filename and hdf table tabname
         df = pd.DataFrame(data=self.mat)
         df.to_hdf(self.file, key=self.name, format="table")
@@ -957,171 +1072,165 @@ def correlate_dat( **kwargs):
         A list of CountMatrix objects IF load == True
         
     """
-    load = kwargs.get('load',False)
-    save = kwargs.get('save',True)
     no_z1 = kwargs.get('no_z1', False)
     no_z2 = kwargs.get('no_z2', False)
     zbins = kwargs.get('zbins', np.linspace(0.3, 1.5, num=4))
     abins = kwargs.get('abins', np.logspace(np.log10(.0025), np.log10(1.5), num=12))
     filename = kwargs.get('filename')
-    datname  = kwargs.get('datname')
+    jobstring =kwargs.get('jobstring')
     
     part1 = kwargs.get('part1')
     part2 = kwargs.get('part2')
     
         
-    if save:
-        if part1:
-            #Get all the parameters to run the correlation on
-            d1, d2 = kwargs.get('d1'), kwargs.get('d2')
-            
-            colnames1, colnames2 = kwargs.get('colnames1'), kwargs.get('colnames2')
-            z1, z2 = kwargs.get('z1'), kwargs.get('z2')
-            
-            #Save the metadata part 1
-            pd.DataFrame(zbins).to_hdf(filename, key='zbins')
-            pd.DataFrame(abins).to_hdf(filename, key='abins')
-            pd.DataFrame(colnames1).to_hdf(filename, key='colnames1')
-            pd.DataFrame(colnames2).to_hdf(filename, key='colnames2')
-            meta = pd.DataFrame()
-            meta['d1'] = [d1]
-            meta['d2'] = [d2]
-            meta['no_z1'] = [no_z1]
-            meta['no_z2'] = [no_z2]
-            meta['fn'] = [filename]
-            meta['ms'] = [("metastring_time=" +  time.asctime( time.localtime(time.time())))]
-            meta.to_hdf(filename, key='meta')
-            
-            #Get the data out
-            ra1, dec1, pix1, z1 = [], [], [], []
-            if no_z1:
-                ra1, dec1, pix1 = get_cols(d1, colnames1[:3])
-            else:
-                ra1, dec1, pix1, z1 = get_cols(d1, colnames1[:4])
-            
-            ra2, dec2, pix2, z2 = [], [], [], []
-            if no_z2:
-                ra2, dec2, pix2 = get_cols(d2, colnames2[:3])
-            else:
-                ra2, dec2, pix2, z2 = get_cols(d2, colnames2[:4])
-                
-            
-            
-            report("correlate_dat(): Sending to correlate_zbin() with filename "+
-                   str(filename)+"\n"+"And len(ra1)="+str(len(ra1))+
-                   " and len(ra2)="+str(len(ra2)))
-            
-            #Prepare the bins
-            global n_cores
-            zbins1 = zbins
-            zbins2 = zbins
-            if no_z1 == True:
-                zbins1 = []
-            if no_z2 == True:
-                zbins2 = []
-            cart_bins = angular_dist_to_euclidean_dist(angular_bins)
-            
-            #Divide up the ra and dec by z bin and pixel
-            report("correlate_dat(): Sorting groups by z bin and pixel")
-            group1, len1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
-            group2, len2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
-    
-            #Generate the arguments to the processes
-            z = 0
-            
-            report("correlate_dat(): Run the jobs.")
-            #Be cognizant of whether or not redshift is being used in a given analysis
-            if no_z1 == True and no_z2 == True:
-                correlate_zbin(file = filename,
-                               coords1 = group1[0], coords2 = group2[0],
-                               z = z, bins = cart_bins,
-                               lenra1 = len1[0], lenra2 = len2[0],
-                               name = datname)
-                z = z + 1
-            elif no_z1 == True and no_z2 == False:
-                for i in range(0, len(group2)):
-                    correlate_zbin(file = filename,
-                                   coords1 = group1[0], coords2 = group2[i],
-                                   lenra1 = len1[0],     lenra2 = len2[i],
-                                   z = z, bins = cart_bins, name = datname)
-                    z = z + 1
-            elif no_z1 == False and no_z2 == True:
-                for i in range(0, len(group1)):
-                    correlate_zbin(file = filename,
-                                   z = z, bins = cart_bins, name = datname,
-                                   coords1 = group1[i], coords2 = group2[0],
-                                   lenra1 = len1[i],     lenra2 = len2[0])
-                    z = z + 1
-            else:
-                for i in range(0, len(group1)):
-                    correlate_zbin(file = filename,
-                                   z = z, bins = cart_bins, name = datname,
-                                   coords1 = group1[i], coords2 = group2[i],
-                                   lenra1 = len1[i],     lenra2 = len2[i])
-                    z = z + 1
+    if part1:
+        #Get all the parameters to run the correlation on
+        d1, d2 = kwargs.get('d1'), kwargs.get('d2')
         
-        elif part2:
-            report("Prepping count matrices")
-            z = 0
-            count_matrix_array_array = []
-            if no_z1 == True and no_z2 == True:
+        colnames1, colnames2 = kwargs.get('colnames1'), kwargs.get('colnames2')
+        z1, z2 = kwargs.get('z1'), kwargs.get('z2')
+        
+        #Save the metadata part 1
+        pd.DataFrame(zbins).to_hdf(filename, key='zbins')
+        pd.DataFrame(abins).to_hdf(filename, key='abins')
+        pd.DataFrame(colnames1).to_hdf(filename, key='colnames1')
+        pd.DataFrame(colnames2).to_hdf(filename, key='colnames2')
+        meta = pd.DataFrame()
+        meta['d1'] = [d1]
+        meta['d2'] = [d2]
+        meta['no_z1'] = [no_z1]
+        meta['no_z2'] = [no_z2]
+        meta['fn'] = [filename]
+        meta['ms'] = [("metastring_time=" +  time.asctime( time.localtime(time.time())))]
+        meta.to_hdf(filename, key='meta')
+        
+        #Get the data out
+        ra1, dec1, pix1, z1 = [], [], [], []
+        if no_z1:
+            ra1, dec1, pix1 = get_cols(d1, colnames1[:3])
+        else:
+            ra1, dec1, pix1, z1 = get_cols(d1, colnames1[:4])
+        
+        ra2, dec2, pix2, z2 = [], [], [], []
+        if no_z2:
+            ra2, dec2, pix2 = get_cols(d2, colnames2[:3])
+        else:
+            ra2, dec2, pix2, z2 = get_cols(d2, colnames2[:4])
+            
+        
+        
+        report("correlate_dat(): Sending to correlate_zbin() with filename "+
+               str(filename)+"\n"+"And len(ra1)="+str(len(ra1))+
+               " and len(ra2)="+str(len(ra2)))
+        
+        #Prepare the bins
+        global n_cores
+        zbins1 = zbins
+        zbins2 = zbins
+        if no_z1 == True:
+            zbins1 = []
+        if no_z2 == True:
+            zbins2 = []
+        cart_bins = angular_dist_to_euclidean_dist(angular_bins)
+        
+        #Divide up the ra and dec by z bin and pixel
+        report("correlate_dat(): Sorting groups by z bin and pixel")
+        group1, len1 = by_bin(ra1, dec1, z1, pix1, zbins=zbins1)
+        group2, len2 = by_bin(ra2, dec2, z2, pix2, zbins=zbins2)
+
+        #Generate the arguments to the processes
+        z = 0
+        
+        #DELETE THE OLD FILE HERE
+        #ASLKFJALSKJDFLKSJDHALKSDJHALSKDJ
+        
+        report("correlate_dat(): Run the jobs.")
+        #Be cognizant of whether or not redshift is being used in a given analysis
+        if no_z1 == True and no_z2 == True:
+            correlate_zbin(jobstring=jobstring,
+                           coords1 = group1[0], coords2 = group2[0],
+                           z = z, bins = cart_bins,
+                           lenra1 = len1[0], lenra2 = len2[0])
+            z = z + 1
+        elif no_z1 == True and no_z2 == False:
+            for i in range(0, len(group2)):
+                correlate_zbin(jobstring=jobstring,
+                               coords1 = group1[0], coords2 = group2[i],
+                               lenra1 = len1[0],     lenra2 = len2[i],
+                               z = z, bins = cart_bins)
+                z = z + 1
+        elif no_z1 == False and no_z2 == True:
+            for i in range(0, len(group1)):
+                correlate_zbin(jobstring=jobstring,
+                               z = z, bins = cart_bins,
+                               coords1 = group1[i], coords2 = group2[0],
+                               lenra1 = len1[i],     lenra2 = len2[0])
+                z = z + 1
+        else:
+            for i in range(0, len(group1)):
+                correlate_zbin(jobstring=jobstring,
+                               z = z, bins = cart_bins, 
+                               coords1 = group1[i], coords2 = group2[i],
+                               lenra1 = len1[i],     lenra2 = len2[i])
+                z = z + 1
+    
+    elif part2:
+        report("Prepping count matrices")
+        z = 0
+        count_matrix_array_array = []
+        if no_z1 == True and no_z2 == True:
+            count_matrix_array = []
+            for a in range(len(abins)-1):
+                mat = CountMatrix(filename=filename,
+                                  tabname=("bin_" + str(z) + str(a)),
+                                  load=False, save=True)
+                count_matrix_array.append(mat)
+            count_matrix_array_array.append(count_matrix_array)
+            z = z + 1
+        else:
+            for i in range(0, len(zbins)-1):
                 count_matrix_array = []
                 for a in range(len(abins)-1):
-                    mat = CountMatrix(filename=(filepref + datname),
+                    mat = CountMatrix(filename=filename,
                                       tabname=("bin_" + str(z) + str(a)),
                                       load=False, save=True)
                     count_matrix_array.append(mat)
                 count_matrix_array_array.append(count_matrix_array)
                 z = z + 1
-            else:
-                for i in range(0, len(zbins)-1):
-                    count_matrix_array = []
-                    for a in range(len(abins)-1):
-                        mat = CountMatrix(filename=(filepref + datname),
-                                          tabname=("bin_" + str(z) + str(a)),
-                                          load=False, save=True)
-                        count_matrix_array.append(mat)
-                    count_matrix_array_array.append(count_matrix_array)
-                    z = z + 1
-            
-            report("Now putting the job results together")
-            z = 0
-            global mpi_path
-            if no_z1 == True and no_z2 == True:
-                get_mpi_results(z, datname, filepref, abins, mpi_path,
-                                count_matrix_array_array[0])
+        
+        report("Now putting the job results together")
+        z = 0
+        if no_z1 == True and no_z2 == True:
+            get_mpi_results(z, jobstring, abins, outdir,
+                            count_matrix_array_array[0])
+            z = z + 1
+        else:
+            for i in range(0, len(zbins)-1):
+                get_mpi_results(z, jobstring, abins, outdir,
+                                count_matrix_array_array[z])
                 z = z + 1
-            else:
-                for i in range(0, len(zbins)-1):
-                    get_mpi_results(z, datname, filepref, abins, mpi_path,
-                                    count_matrix_array_array[z])
-                    z = z + 1
 
-    
-    if load:
-        if part1:
-            return None
-        if part2:
-            #Load relevant metadata
-            zbins = pd.read_hdf(filename, key='zbins')[0].tolist()
-            abins = pd.read_hdf(filename, key='abins')[0].tolist()
-            meta = pd.read_hdf(filename, key='meta')
-            no_z1 = meta['no_z1'][0]
-            no_z2 = meta['no_z2'][0]
-            
-            a_range = range(len(abins)-1)
-            z_range = range(len(zbins)-1)
-            if no_z1 and no_z2:
-                z_range = [0]
-            
-            #key format is bin_xy where x is z bin number and y is angular bin number 
-            #Load the correlation
-            matrices = {}
-            for a in a_range:
-                for z in z_range:
-                    mname = ("bin_" + str(z) + str(a))
-                    matrices[mname] = CountMatrix(filename=filename, tabname=mname, load=True)
-            return matrices
+
+        #Load relevant metadata
+        zbins = pd.read_hdf(filename, key='zbins')[0].tolist()
+        abins = pd.read_hdf(filename, key='abins')[0].tolist()
+        meta = pd.read_hdf(filename, key='meta')
+        no_z1 = meta['no_z1'][0]
+        no_z2 = meta['no_z2'][0]
+        
+        a_range = range(len(abins)-1)
+        z_range = range(len(zbins)-1)
+        if no_z1 and no_z2:
+            z_range = [0]
+        
+        #key format is bin_xy where x is z bin number and y is angular bin number 
+        #Load the correlation
+        matrices = {}
+        for a in a_range:
+            for z in z_range:
+                mname = ("bin_" + str(z) + str(a))
+                matrices[mname] = CountMatrix(filename=filename, tabname=mname, load=True)
+        return matrices
     
 
 def correlate_zbin( **kwargs):
@@ -1150,15 +1259,14 @@ def correlate_zbin( **kwargs):
                        for each data set
                        
     """
-    file =    kwargs['file']
-    coords1 = kwargs['coords1'] 
-    coords2 = kwargs['coords2'] 
-    z =       kwargs['z'] 
-    bins =    kwargs['bins'] 
-    lenra1 =  kwargs['lenra1'] 
-    lenra2 =  kwargs['lenra2'] 
-    datname = kwargs['name'] 
-#    forcejoin = kwargs.get('forcejoin', False)
+    jobstring = kwargs['jobstring']
+    coords1 =   kwargs['coords1'] 
+    coords2 =   kwargs['coords2'] 
+    z =         kwargs['z'] 
+    bins =      kwargs['bins'] 
+    lenra1 =    kwargs['lenra1'] 
+    lenra2 =    kwargs['lenra2'] 
+    #forcejoin = kwargs.get('forcejoin', False)
     
     #1. Make the KDTrees that will be used for computing the pair counts
     #   Ensure that KDTrees are not made for empty pixels. 
@@ -1175,7 +1283,7 @@ def correlate_zbin( **kwargs):
             n_trees = n_trees + 1
     report("correlate_zbin(): Just finished growing "+str(n_trees)+
            " trees corresponding to coords2 shape = "+str(np.shape(coords2))+"\n"+
-           "File: " + file + " \n" +
+           "Jobstring: " + jobstring + " \n" +
            "Generating MPI inputs")
     
         
@@ -1191,8 +1299,8 @@ def correlate_zbin( **kwargs):
         else:
             #i.   Figure out where inputs and outputs for the mpi helper file
             #     will be saved
-            input_path = str(mpi_path + str(current_jobs))
-            output_path = str(mpi_path + "_" + datname + "_" + str(z) +
+            input_path = str(jobdir + "j_" + str(current_jobs))
+            output_path = str("o_" + jobstring + "_" + str(z) +
                               "_" + str(pair[0]) + "_" + str(pair[1]) + ".npy")
             
             #ii.  Put together the input for the mpi helper file
@@ -1213,39 +1321,39 @@ def correlate_zbin( **kwargs):
             current_jobs = current_jobs + 1
             total_jobs   = total_jobs   + 1
 
-def run_mpi_jobs():
-    """
-    mpi4py implementation for multiprocessing.
-    
-    Runs all the jobs, waits for them to return.
-    """
-    global current_jobs
-    global code_path
-    global n_cores
-    
-    pickle.dump({"total_jobs":current_jobs}, open(mpi_path, 'wb'))
-    
-    helper = code_path + 'corrset_mpi_helper.py'
-    cmd = "mpiexec -n " + str(n_cores) + " python " + helper
-    report("Running " + str(current_jobs) + " jobs. \n" +
-           "popen command is as follows: " + cmd)
-    
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    wrapper = io.TextIOWrapper(process.stdout, encoding="utf-8")
-    
-    jobs_finished = 0
-    while jobs_finished < current_jobs:
-        for line in wrapper:  
-            print("mpi_out_f"+str(jobs_finished)+": "+line, end="")
-            if "code:exit" in line:                    
-                jobs_finished = jobs_finished+1       
-        process.wait()
-    
-    report("Ran " + str(current_jobs) + " jobs.")
-    current_jobs = 0
+#def run_mpi_jobs():
+#    """
+#    mpi4py implementation for multiprocessing.
+#    
+#    Runs all the jobs, waits for them to return.
+#    """
+#    global current_jobs
+#    global code_path
+#    global n_cores
+#    
+#    pickle.dump({"total_jobs":current_jobs}, open(mpi_path, 'wb'))
+#    
+#    helper = code_path + 'corrset_mpi_helper.py'
+#    cmd = "mpiexec -n " + str(n_cores) + " python " + helper
+#    report("Running " + str(current_jobs) + " jobs. \n" +
+#           "popen command is as follows: " + cmd)
+#    
+#    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+#    wrapper = io.TextIOWrapper(process.stdout, encoding="utf-8")
+#    
+#    jobs_finished = 0
+#    while jobs_finished < current_jobs:
+#        for line in wrapper:  
+#            print("mpi_out_f"+str(jobs_finished)+": "+line, end="")
+#            if "code:exit" in line:                    
+#                jobs_finished = jobs_finished+1       
+#        process.wait()
+#    
+#    report("Ran " + str(current_jobs) + " jobs.")
+#    current_jobs = 0
 
        
-def get_mpi_results(z, datname, filepref, bins, mpi_path, count_matrix_array):
+def get_mpi_results(z, jobstring, filepref, bins, mpi_path, count_matrix_array):
     """
     mpi4py implementation for multiprocessing.
     """
@@ -1253,12 +1361,11 @@ def get_mpi_results(z, datname, filepref, bins, mpi_path, count_matrix_array):
     global pairs
     for pair in pairs:
         #ii.  Figure out what the MPI output name would be
-        output_path = str(mpi_path + "_" + datname + "_" + str(z) +
+        output_path = str(mpi_path + "o_" + jobstring + "_" + str(z) +
                           "_" + str(pair[0]) + "_" + str(pair[1]) + ".npy")
         
         #iii. Check if there is an output file
         if os.path.isfile(output_path): 
-            
             #iv.  If there is, load it and add it to the count matrix array
             output_data = np.load(output_path)
             for a in range(len(bins)-1):
