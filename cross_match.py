@@ -58,7 +58,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
     
     
     #Send message noting beginning the algorithm.
-    report("About to start cross match algorithm")    
+    report("About to start cross match algorithm")
     
     if append == "left":
         #1. Get the left and
@@ -118,13 +118,12 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             #While chunk.index returns the indexing in the entire HDF file,
             #chunk.iloc[] requires indexing per chunk. Thus, we need to subtract
             #the minimum of the chunk before calling chunk.iloc[]
-            relevant_right_indices = [indices[i]-chunk_min for i in relevant_indices]
+            relevant_right_indices = [int(indices[i]-chunk_min) for i in relevant_indices]
             
             #Get the rows of those indices from this chunk and keep track of  
             #their cross matched indices.
             attach = chunk.iloc[relevant_right_indices]
             attach["index"] = relevant_left_indices
-            
             #Add to the DataFrame we're going to attach to the left later
             if n == 0:
                 frame_to_add = attach
@@ -134,7 +133,6 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
             n = n + 1
         
         chunks.close()
-        
         
         #6. Get the left frame to append to and merge them. 
         report("Joining the cross matched catalog")
@@ -164,8 +162,7 @@ def file_cross_match(left, right, new, suffix, chunksize, radius=2, verbose=True
         #For each column, will with the appropriate values
         for i in range(0, len(left_df.columns)):
             new_dtype = new_datatypes[i]
-            old_dtype = dct[new_col_names[i]]
-            
+            old_dtype = dct[new_col_names[i]]            
             if new_dtype == old_dtype:
                 pass
             else:
@@ -323,6 +320,7 @@ def tree_query_multi(tree, ra, dec, rad, algorithm, metric=None):
     
     indices = mp.Manager().list(indices_empty)
     
+    
     for i in range(0, n_jobs):
         args = (tree, ra, dec, group_pairs[i], algorithm,
                 rad, metric, indices, turn, i)
@@ -332,6 +330,7 @@ def tree_query_multi(tree, ra, dec, rad, algorithm, metric=None):
         p.join()
     for p in processes:
         p.terminate()
+    
     
     return indices[:]
 
@@ -353,13 +352,6 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
     elif algorithm == "lowest":
         #Get the indices (shape = left, points to right)
         indices_to_add = tree.query_ball_point(key, rad)
-        
-        print("Shape: " + str(np.shape(indices_to_add)))
-        print("Group: " + str(group))
-        print("Max: " + str(max(indices_to_add)))
-        print("Min: " + str(min(indices_to_add)))
-        print("ra shape: " + str(np.shape(ra)))
-        
         for i in range(0, len(indices_to_add)):
             #Set the entry to -1 if no entries are found
             if len(indices_to_add[i]) == 0:
@@ -371,15 +363,20 @@ def tree_search_part(tree, ra, dec, group, algorithm, rad, metric, indices, turn
                 metrics = [metric[j] for j in indices_to_add[i]]
                 indices_to_add[i] = indices_to_add[i][min(range(len(metrics)),
                                                       key=metrics.__getitem__)]
+                indices_to_add[i] = indices_to_add[i] + group[0]
     elif algorithm == "closest":
-        indices_to_add, distances = tree.query(key, k=1, distance_upper_bound=rad)
+        distances, indices_to_add = tree.query(key, k=1, distance_upper_bound=rad)
+        
+        for i in range(len(indices_to_add)):
+            if indices_to_add[i] == tree.n:
+                indices_to_add[i] = -1
     else:
         raise ValueError("algorithm == " + algorithm +
                          " is not valid for multiprocessed tree search")
         
     #We lost the indexing from taking a slice to search the tree, so we need to
     #re-adjust the indices to align with the full dataframe
-    indices_to_add = (np.array(indices_to_add) + group[0])
+    indices_to_add = np.array(indices_to_add, dtype=int).tolist()
     
     #Add to the shared array
     indices[group[0]:group[1]] = indices_to_add
