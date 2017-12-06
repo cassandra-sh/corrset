@@ -12,8 +12,10 @@ import numpy as np
 from mpi4py import MPI
 import sys
 
-dir_path = "/scr/depot0/csh4/"
-mpi_path=  dir_path + "cats/mpi/holder/h"
+dir_path = "/scratch/gpfs/csh4/"
+
+jobdir = dir_path + "cats/mpi/jobs/"
+outdir = dir_path + "cats/mpi/outs/"
 
 start_time = int(time.time())
 def current_time():
@@ -59,9 +61,9 @@ def ra_dec_to_xyz(ra, dec):
 def do_job(rank, num):        
     f = 0
     try:
-        f = open(mpi_path + str(num), 'rb')
+        f = open(jobdir + "j_" + str(num), 'rb')
     except FileNotFoundError as e:
-        print("File " + mpi_path + str(num) + " not found. e = " + str(e))
+        print("File " + jobdir + "j_" + str(num) + " not found. e = " + str(e))
         sys.stdout.flush()
         return
     args = pickle.load(f)
@@ -72,7 +74,7 @@ def do_job(rank, num):
     bins   = args['bins']
     lenra2 = args['lenra2']      
     lenra1 = args['lenra1']
-    path   = args['path']
+    path   = outdir + args['path']
     
     result = two_point_angular_corr_part(coords[0], coords[1], tree, bins)
     result = np.array(np.diff(result), dtype=float)/(lenra1*lenra2)
@@ -99,7 +101,7 @@ if __name__ == "__main__":
     if rank == 0:
         for i in range(1, size):
             job_list[i] = i-1
-        f = open(mpi_path, 'rb')
+        f = open((jobdir+"_jj"), 'rb')
         total_jobs = pickle.load(f)['total_jobs']
         print("Total number of jobs = " + str(total_jobs))
         sys.stdout.flush()
@@ -112,6 +114,11 @@ if __name__ == "__main__":
     
     #RANK = 0.  Bourgeoisie
     if rank == 0:
+        times = []
+        usage = []
+        progress = []
+        jobs_going = 0
+        jobs_done = 0
         done = False
         next_job = size - 1
         reqs = {}
@@ -129,22 +136,29 @@ if __name__ == "__main__":
                         job_list[i] = next_job  # assign the job
                         next_job = next_job + 1 # and increase the counter
                                                 # and prepare for the result
-                        reqs[i] = comm.irecv(source=i, tag=i)
-                        
+                        jobs_done = jobs_done + 1
+                        reqs[i] = comm.irecv(source=i, tag=i)                        
                         print("Job list is " + str(job_list) + " at time " + str(current_time()))
-                        sys.stdout.flush()
+                        print("Using " + str(jobs_going) + " of " + str(size) + " workers")
+                        sys.stdout.sflush()
                     elif job_list[i] == 'exit': # If we're done, do nothing
                         pass    
                     else:                       # If there is not another job,
                         job_list[i] = 'exit'    # give the exit code.
+                        jobs_done = jobs_done + 1
                         print("Job list is " + str(job_list) + " at time " + str(current_time()))
+                        print("Using " + str(jobs_going) + " of " + str(size) + " workers")
                         sys.stdout.flush()
                     
                     #iii. Send the updated list to the proletarian
                     comm.isend(job_list, dest=i, tag=i) 
                     
             
-            
+            #Note the current resource usage...
+            jobs_going = len([key for key, value in job_list.items() if 'exit' == value])
+            progress.append(jobs_done)
+            usage.append(jobs_going)
+            times.append(current_time())
             
             #iv.  Check if all entries are 'exit'
             all_exit = True
@@ -154,9 +168,13 @@ if __name__ == "__main__":
             #v.   Exit if this is the case
             if all_exit:
                 done = True
+                #Save the resource usage record. 
+                np.save(outdir + "_going.npy", np.array(usage, dtype=int))
+                np.save(outdir + "_done.npy", np.array(progress, dtype=int))
+                np.save(outdir + "_times.npy", np.array(times, dtype=int))
                 break
                 
-            time.sleep(.05)
+            time.sleep(1.0)
             
 
     #RANK != 0. Proletarians
