@@ -47,7 +47,6 @@ import camb_model_new
 import file_manager
 import matplotlib
 import quick_figs
-import email_bot
 #import gen_pairs
 import pickle
 import shutil
@@ -542,14 +541,6 @@ def main(job_suf="", save=True, load=False, email=True, log=True, justplotcorr=F
     #
     outfile_pdf = directory + "/output_jackknifer.pdf"
     fig.savefig(outfile_pdf)
-
-    #
-    # Send me an email with results
-    #
-    files = [outfile_pdf, savename, (directory+"/qualifier.ini")]
-    if email:
-        email_bot.email_me("mpi_read output", subject="mpi_read_output",
-                           attachments=files)
 
     #
     # Save the results to a log directory
