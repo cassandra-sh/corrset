@@ -1,8 +1,8 @@
 pre_qualifier -> qualifier -> mpi_prep -> mpi_run -> mpi_read -> jackknifer
     
-    Each part has the following purpose:
+Each part has the following purpose:
         
-    [pre pre qualifier stuff]
+[pre pre qualifier stuff]
         -cms             - cross matches a bunch of stuff, applies flags, transfers between
                            HDFs, DataFrames, and fits files, handles Venice and MANGLE masks
         -hsc_random_gen  - generates a random catalog for the HSC footprint using various
@@ -13,7 +13,7 @@ pre_qualifier -> qualifier -> mpi_prep -> mpi_run -> mpi_read -> jackknifer
                            HDFs. The problem is that astropy fits tables don't chunk read well,
                            and that is an absolutely necessary functionality for this project.
         
-    pre_qualifier
+pre_qualifier
         implements any and all quality cuts determined appropriate for the 
         correlation inputs and saves the results in a way where the qualifier
         can read them.
@@ -21,7 +21,7 @@ pre_qualifier -> qualifier -> mpi_prep -> mpi_run -> mpi_read -> jackknifer
         The saved outputs of pre_qualifier must be plugged into qualifier.ini
         for qualifier to read the outputs
     
-    qualifier
+qualifier
         -sorts data catalog by pixel, redshift
         -gets out pixel and redshift distribution of data (not used anymore)
         -normalizes random catalog to large scale distribution of data
@@ -36,23 +36,23 @@ pre_qualifier -> qualifier -> mpi_prep -> mpi_run -> mpi_read -> jackknifer
         CORRELATIONS! INCLUDING HOW MANY CORRELATIONS, WHAT THE ANGULAR BINS ARE
         WHAT THE FILE PATHS ARE, EVERYTHING!
     
-    mpi_prep
+mpi_prep
         -Doesn't actually use MPI anymore
         -Using the output of qualifier, prepares pixel-pixel pairs of information
         between the relevant data sets and pickles them for mpi_run to process.
     
-    mpi_run
+mpi_run
         -Uses a multiprocessing scheme to unpickle, run, and repickle, pixel-pixel
         correlation terms. Divide and conquer. 
         
         relies on mp_manager, which manages the Python multiprocessing queue
     
-    mpi_read
+mpi_read
         -reads out all of the correlation information into CountMatrix objects
     
         relies on CountMatrix, which contains count information
     
-    jackknifer
+jackknifer
         -Handles the CountMatrix objects to plot a crapload of stuff about the
         correlation
         
@@ -62,3 +62,12 @@ pre_qualifier -> qualifier -> mpi_prep -> mpi_run -> mpi_read -> jackknifer
         fits files
         
         also relies on camb_model_new for generating models
+
+
+Dependencies
+-astroML
+-pycamb
+-astropy
+-pandas
+-pymangle
+-healpy
