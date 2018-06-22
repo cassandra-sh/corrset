@@ -1,7 +1,12 @@
 Goals before leaving:
--write a "get started" guide for how to run a correlation through the pipeline
--turn existing scripts into OOP modules if at all possible
--add more documentation, especially on things which are not used as much anymore
+
+-write a "get started" guide for how to run a correlation through the pipeline 
+
+-turn existing scripts into OOP modules if at all possible 
+
+-add more documentation, especially on things which are not used as much anymore 
+
+
 
 Readme:
 
